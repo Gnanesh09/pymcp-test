@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
+import os
 import re
 import uuid
+from html import escape
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from mcp.server import MCPServer
@@ -15,23 +21,25 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 
 # ============================================================
-# CONFIGURATION
+# CONFIG
 # ============================================================
 
 APP_NAME = "QuickCart MCP"
-APP_VERSION = "2.0.0"
+APP_VERSION = "3.0.0"
 
 PUBLIC_HOST = "pymcp-test.onrender.com"
+PUBLIC_BASE_URL = f"https://{PUBLIC_HOST}"
+MCP_URL = f"{PUBLIC_BASE_URL}/mcp"
 
-MCP_URL = f"https://{PUBLIC_HOST}/mcp"
-
-# ChatGPT Apps UI resource
 PRODUCT_UI_URI = "ui://quickcart/product-catalogue.html"
 
-# product_catalogue.html must be beside main.py
-PRODUCT_UI_FILE = (
-    Path(__file__).resolve().parent / "product_catalogue.html"
-)
+BASE_DIR = Path(__file__).resolve().parent
+PRODUCT_UI_FILE = BASE_DIR / "product_catalogue.html"
+
+# Razorpay
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+RAZORPAY_API_BASE = "https://api.razorpay.com/v1"
 
 
 # ============================================================
@@ -198,9 +206,11 @@ PRODUCTS: list[dict[str, Any]] = [
 
 # Demo only.
 # Replace with PostgreSQL/MongoDB for production.
-
 CARTS: dict[str, dict[str, int]] = {}
 ORDERS: dict[str, dict[str, Any]] = {}
+
+# Razorpay payment attempts.
+PAYMENTS: dict[str, dict[str, Any]] = {}
 
 
 # ============================================================
@@ -213,9 +223,7 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def get_product(
-    product_id: str,
-) -> dict[str, Any] | None:
+def get_product(product_id: str) -> dict[str, Any] | None:
     for product in PRODUCTS:
         if product["id"] == product_id:
             return product
@@ -223,9 +231,7 @@ def get_product(
     return None
 
 
-def public_product(
-    product: dict[str, Any],
-) -> dict[str, Any]:
+def public_product(product: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": product["id"],
         "name": product["name"],
@@ -242,9 +248,7 @@ def public_product(
     }
 
 
-def calculate_cart(
-    user_id: str,
-) -> dict[str, Any]:
+def calculate_cart(user_id: str) -> dict[str, Any]:
     user_cart = CARTS.get(user_id, {})
 
     items: list[dict[str, Any]] = []
@@ -276,9 +280,7 @@ def calculate_cart(
     return {
         "user_id": user_id,
         "items": items,
-        "item_count": sum(
-            item["quantity"] for item in items
-        ),
+        "item_count": sum(item["quantity"] for item in items),
         "subtotal": subtotal,
         "delivery_fee": delivery_fee,
         "total": total,
@@ -297,12 +299,30 @@ def load_product_ui() -> str:
     )
 
 
+def verify_razorpay_signature(
+    order_id: str,
+    payment_id: str,
+    received_signature: str,
+) -> bool:
+    if not RAZORPAY_KEY_SECRET:
+        return False
+
+    message = f"{order_id}|{payment_id}"
+
+    expected_signature = hmac.new(
+        RAZORPAY_KEY_SECRET.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return hmac.compare_digest(
+        expected_signature,
+        received_signature,
+    )
+
+
 # ============================================================
-# MCP APPS EXTENSION
-#
-# IMPORTANT:
-# Apps/resource/tool registration happens BEFORE
-# MCPServer(...) is created.
+# APPS SDK
 # ============================================================
 
 apps = Apps()
@@ -314,16 +334,14 @@ apps.add_html_resource(
     title="QuickCart Product Catalogue",
     description=(
         "QuickCart product catalogue with images, "
-        "prices, ratings and Add buttons."
+        "prices, ratings, cart and payment actions."
     ),
     prefers_border=True,
 )
 
 
 # ============================================================
-# UI-BOUND PRODUCT TOOLS
-#
-# These MUST be registered BEFORE MCPServer(...)
+# UI PRODUCT TOOLS
 # ============================================================
 
 @apps.tool(
@@ -340,10 +358,6 @@ def search_products(
     max_price: int | None = None,
     limit: int = 8,
 ) -> dict[str, Any]:
-    """
-    Search products by name, brand, category,
-    description or tags.
-    """
 
     if not query.strip():
         return {
@@ -357,24 +371,19 @@ def search_products(
     limit = max(1, min(limit, 50))
     terms = normalize(query).split()
 
-    matches: list[
-        tuple[int, dict[str, Any]]
-    ] = []
+    matches: list[tuple[int, dict[str, Any]]] = []
 
     for product in PRODUCTS:
 
         if category is not None:
-            if (
-                normalize(product["category"])
-                != normalize(category)
-            ):
+            if normalize(product["category"]) != normalize(category):
                 continue
 
         if max_price is not None:
             if product["price"] > max_price:
                 continue
 
-        searchable_text = normalize(
+        searchable = normalize(
             " ".join(
                 [
                     product["name"],
@@ -389,13 +398,11 @@ def search_products(
         score = sum(
             1
             for term in terms
-            if term in searchable_text
+            if term in searchable
         )
 
         if score > 0:
-            matches.append(
-                (score, product)
-            )
+            matches.append((score, product))
 
     matches.sort(
         key=lambda item: (
@@ -405,7 +412,7 @@ def search_products(
         )
     )
 
-    selected_products = [
+    selected = [
         product
         for _, product in matches[:limit]
     ]
@@ -413,10 +420,10 @@ def search_products(
     return {
         "success": True,
         "query": query,
-        "count": len(selected_products),
+        "count": len(selected),
         "products": [
             public_product(product)
-            for product in selected_products
+            for product in selected
         ],
     }
 
@@ -424,42 +431,34 @@ def search_products(
 @apps.tool(
     resource_uri=PRODUCT_UI_URI,
     title="Product Catalogue",
-    description=(
-        "Browse QuickCart products by category "
-        "using the interactive product catalogue."
-    ),
+    description="Browse QuickCart products.",
 )
 def get_catalogue(
     category: str | None = None,
     limit: int = 20,
 ) -> dict[str, Any]:
-    """
-    Browse all products or a specific category.
-    """
 
     limit = max(1, min(limit, 50))
 
     products = PRODUCTS
 
-    if category is not None:
+    if category:
         products = [
             product
             for product in products
-            if (
-                normalize(product["category"])
-                == normalize(category)
-            )
+            if normalize(product["category"])
+            == normalize(category)
         ]
 
-    selected_products = products[:limit]
+    selected = products[:limit]
 
     return {
         "success": True,
         "category": category,
-        "count": len(selected_products),
+        "count": len(selected),
         "products": [
             public_product(product)
-            for product in selected_products
+            for product in selected
         ],
     }
 
@@ -467,17 +466,11 @@ def get_catalogue(
 @apps.tool(
     resource_uri=PRODUCT_UI_URI,
     title="Product Details",
-    description=(
-        "Show product information in the "
-        "QuickCart product interface."
-    ),
+    description="Show details for a product.",
 )
 def get_product_details(
     product_id: str,
 ) -> dict[str, Any]:
-    """
-    Get detailed information about a product.
-    """
 
     product = get_product(product_id)
 
@@ -485,8 +478,8 @@ def get_product_details(
         return {
             "success": False,
             "error": "Product not found.",
-            "count": 0,
             "products": [],
+            "count": 0,
         }
 
     return {
@@ -500,55 +493,25 @@ def get_product_details(
 
 # ============================================================
 # MCP SERVER
-#
-# Apps must already contain resources/tools here.
 # ============================================================
 
 mcp = MCPServer(
     APP_NAME,
     instructions="""
-You are QuickCart, an agentic shopping assistant.
+You are QuickCart, an agentic commerce assistant.
 
-AVAILABLE SHOPPING CAPABILITIES:
+Use the shopping tools to search, browse, manage the cart,
+create payments, and check orders.
 
-- list categories
-- search products
-- browse catalogue
-- inspect product details
-- add products to cart
-- update cart quantities
-- remove products
-- view cart
-- clear cart
-- checkout
-- view orders
-- check order status
-
-IMPORTANT SHOPPING BEHAVIOR:
-
-1. When the user says "find", "search", "show me",
-   "browse", or similar product requests, use
-   search_products() or get_catalogue().
-
-2. Product search/catalogue/product-detail tools have an
-   interactive UI when the connected ChatGPT client supports MCP Apps.
-
-3. Never invent products, prices, stock, ratings or IDs.
-
-4. Use returned product IDs when adding items to the cart.
-
-5. For multi-item requests, search each required product
-   when necessary.
-
-6. Before ordering, inspect the current cart.
-
-7. checkout(confirm=False) must never create an order.
-
-8. Only call checkout(confirm=True) when the user explicitly
-   asks to buy, order, checkout, or confirm the purchase.
-
-9. After a successful checkout, report the real order ID
-   returned by checkout().
+IMPORTANT:
+- Search products when the user asks what is available.
+- Use the interactive product UI whenever available.
+- Never invent products, prices, stock or order IDs.
+- Inspect the cart before payment.
+- create_payment_order only creates a Razorpay payment attempt.
+- Do not claim payment succeeded until the server confirms it.
+- Only complete the purchase after genuine payment verification.
+- Do not expose the Razorpay secret.
 """,
     extensions=[apps],
 )
@@ -556,15 +519,11 @@ IMPORTANT SHOPPING BEHAVIOR:
 
 # ============================================================
 # NORMAL MCP TOOLS
-#
-# These are registered AFTER MCPServer exists.
 # ============================================================
 
 @mcp.tool()
 def list_categories() -> dict[str, Any]:
-    """
-    List all available shopping categories.
-    """
+    """List all shopping categories."""
 
     categories = sorted(
         {
@@ -586,16 +545,12 @@ def add_to_cart(
     quantity: int = 1,
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
-    """
-    Add a product to the shopping cart.
-    """
+    """Add a product to the cart."""
 
     if quantity <= 0:
         return {
             "success": False,
-            "error": (
-                "Quantity must be greater than zero."
-            ),
+            "error": "Quantity must be greater than zero.",
         }
 
     product = get_product(product_id)
@@ -606,26 +561,17 @@ def add_to_cart(
             "error": "Product not found.",
         }
 
-    cart = CARTS.setdefault(
-        user_id,
-        {},
-    )
+    cart = CARTS.setdefault(user_id, {})
 
-    current_quantity = cart.get(
-        product_id,
-        0,
-    )
-
-    new_quantity = (
-        current_quantity + quantity
-    )
+    current = cart.get(product_id, 0)
+    new_quantity = current + quantity
 
     if new_quantity > product["stock"]:
         return {
             "success": False,
             "error": (
                 f"Only {product['stock']} units "
-                f"of {product['name']} are available."
+                f"are available."
             ),
         }
 
@@ -635,7 +581,7 @@ def add_to_cart(
         "success": True,
         "message": (
             f"Added {quantity} × "
-            f"{product['name']} to your cart."
+            f"{product['name']}."
         ),
         "cart": calculate_cart(user_id),
     }
@@ -647,17 +593,12 @@ def update_cart_item(
     quantity: int,
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
-    """
-    Set the exact quantity of a cart item.
-    quantity=0 removes it.
-    """
+    """Set the exact cart quantity."""
 
     if quantity < 0:
         return {
             "success": False,
-            "error": (
-                "Quantity cannot be negative."
-            ),
+            "error": "Quantity cannot be negative.",
         }
 
     product = get_product(product_id)
@@ -668,25 +609,15 @@ def update_cart_item(
             "error": "Product not found.",
         }
 
-    cart = CARTS.setdefault(
-        user_id,
-        {},
-    )
+    cart = CARTS.setdefault(user_id, {})
 
     if quantity == 0:
-        cart.pop(
-            product_id,
-            None,
-        )
-
+        cart.pop(product_id, None)
     else:
         if quantity > product["stock"]:
             return {
                 "success": False,
-                "error": (
-                    f"Only {product['stock']} units "
-                    f"of {product['name']} are available."
-                ),
+                "error": "Not enough stock.",
             }
 
         cart[product_id] = quantity
@@ -702,19 +633,11 @@ def remove_from_cart(
     product_id: str,
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
-    """
-    Remove a product completely from the cart.
-    """
+    """Remove one item from the cart."""
 
-    cart = CARTS.setdefault(
-        user_id,
-        {},
-    )
+    cart = CARTS.setdefault(user_id, {})
 
-    removed = cart.pop(
-        product_id,
-        None,
-    )
+    removed = cart.pop(product_id, None)
 
     return {
         "success": True,
@@ -727,9 +650,7 @@ def remove_from_cart(
 def get_cart(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
-    """
-    Show the current shopping cart.
-    """
+    """Return the current cart."""
 
     return {
         "success": True,
@@ -741,9 +662,7 @@ def get_cart(
 def clear_cart(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
-    """
-    Remove all products from the cart.
-    """
+    """Clear the cart."""
 
     CARTS[user_id] = {}
 
@@ -755,71 +674,207 @@ def clear_cart(
 
 
 # ============================================================
-# ORDER TOOLS
+# RAZORPAY: CREATE PAYMENT ORDER
 # ============================================================
 
 @mcp.tool()
-def checkout(
-    confirm: bool,
+def create_payment_order(
     user_id: str = "demo-user",
-    address: str = (
-        "Demo address, Bengaluru, Karnataka"
-    ),
-    payment_method: str = "cash_on_delivery",
 ) -> dict[str, Any]:
     """
-    Place the cart as an order.
+    Create a Razorpay Test Mode Order for the current cart.
 
-    confirm=False = preview only.
-    confirm=True = actually create the order.
+    This DOES NOT mark the QuickCart order as paid.
     """
+
+    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+        return {
+            "success": False,
+            "error": (
+                "Razorpay credentials are not configured "
+                "on the server."
+            ),
+        }
 
     cart = calculate_cart(user_id)
 
     if not cart["items"]:
         return {
             "success": False,
-            "error": "Cart is empty.",
+            "error": "Your cart is empty.",
         }
+
+    amount_paise = int(
+        round(cart["total"] * 100)
+    )
+
+    receipt = (
+        f"qc_{uuid.uuid4().hex[:16]}"
+    )
+
+    payload = {
+        "amount": amount_paise,
+        "currency": "INR",
+        "receipt": receipt,
+        "notes": {
+            "user_id": user_id,
+            "source": "quickcart_chatgpt",
+        },
+    }
+
+    try:
+        response = httpx.post(
+            f"{RAZORPAY_API_BASE}/orders",
+            json=payload,
+            auth=(
+                RAZORPAY_KEY_ID,
+                RAZORPAY_KEY_SECRET,
+            ),
+            timeout=20,
+        )
+
+        if response.status_code >= 400:
+            return {
+                "success": False,
+                "error": (
+                    "Razorpay rejected the order."
+                ),
+                "razorpay_response": response.text,
+            }
+
+        razorpay_order = response.json()
+
+    except httpx.RequestError as exc:
+        return {
+            "success": False,
+            "error": (
+                f"Could not reach Razorpay: {exc}"
+            ),
+        }
+
+    razorpay_order_id = razorpay_order["id"]
+
+    # Save immutable payment snapshot.
+    PAYMENTS[razorpay_order_id] = {
+        "razorpay_order_id": razorpay_order_id,
+        "user_id": user_id,
+        "cart": cart,
+        "status": "CREATED",
+        "amount_paise": amount_paise,
+    }
+
+    payment_url = (
+        f"{PUBLIC_BASE_URL}/payment/"
+        f"{razorpay_order_id}"
+    )
+
+    return {
+        "success": True,
+        "test_mode": True,
+        "razorpay_order_id": razorpay_order_id,
+        "razorpay_key_id": RAZORPAY_KEY_ID,
+        "amount": cart["total"],
+        "amount_paise": amount_paise,
+        "currency": "INR",
+        "payment_url": payment_url,
+        "message": (
+            "Razorpay Test Mode payment order "
+            "created. Open payment_url to continue."
+        ),
+        "cart": cart,
+    }
+
+
+# ============================================================
+# PAYMENT STATUS
+# ============================================================
+
+@mcp.tool()
+def get_payment_status(
+    razorpay_order_id: str,
+) -> dict[str, Any]:
+    """Check the server-side payment attempt status."""
+
+    payment = PAYMENTS.get(
+        razorpay_order_id
+    )
+
+    if payment is None:
+        return {
+            "success": False,
+            "error": "Payment attempt not found.",
+        }
+
+    return {
+        "success": True,
+        "payment": {
+            "razorpay_order_id": payment[
+                "razorpay_order_id"
+            ],
+            "status": payment["status"],
+            "amount_paise": payment[
+                "amount_paise"
+            ],
+            "user_id": payment["user_id"],
+            "payment_id": payment.get(
+                "payment_id"
+            ),
+        },
+    }
+
+
+# ============================================================
+# CHECKOUT / QUICKCART ORDER
+# ============================================================
+
+@mcp.tool()
+def checkout(
+    confirm: bool,
+    user_id: str = "demo-user",
+) -> dict[str, Any]:
+    """
+    Finalize a QuickCart order only after payment.
+
+    confirm=True alone is NOT enough.
+    The matching Razorpay payment must have been
+    successfully verified first.
+    """
 
     if not confirm:
         return {
             "success": False,
             "requires_confirmation": True,
             "message": (
-                "Checkout preview only. "
-                "No order was created."
+                "Checkout was not executed."
             ),
-            "cart": cart,
         }
 
-    # Final stock check
-    for item in cart["items"]:
-
-        product = get_product(
-            item["product_id"]
-        )
-
-        if product is None:
-            return {
-                "success": False,
-                "error": (
-                    f"Product {item['product_id']} "
-                    "is no longer available."
-                ),
-            }
-
+    payment_attempts = [
+        payment
+        for payment in PAYMENTS.values()
         if (
-            item["quantity"]
-            > product["stock"]
-        ):
-            return {
-                "success": False,
-                "error": (
-                    f"Insufficient stock for "
-                    f"{product['name']}."
-                ),
-            }
+            payment["user_id"] == user_id
+            and payment["status"] == "PAID"
+        )
+    ]
+
+    if not payment_attempts:
+        return {
+            "success": False,
+            "error": (
+                "No verified Razorpay payment "
+                "was found for this user."
+            ),
+        }
+
+    payment = payment_attempts[-1]
+    cart = payment["cart"]
+
+    if not cart["items"]:
+        return {
+            "success": False,
+            "error": "Paid cart is empty.",
+        }
 
     order_id = (
         f"QC-{uuid.uuid4().hex[:10].upper()}"
@@ -829,35 +884,43 @@ def checkout(
         "order_id": order_id,
         "user_id": user_id,
         "status": "CONFIRMED",
+        "payment_status": "PAID",
+        "razorpay_order_id": (
+            payment["razorpay_order_id"]
+        ),
+        "razorpay_payment_id": payment.get(
+            "payment_id"
+        ),
         "items": cart["items"],
         "subtotal": cart["subtotal"],
         "delivery_fee": cart["delivery_fee"],
         "total": cart["total"],
         "currency": cart["currency"],
-        "address": address,
-        "payment_method": payment_method,
+        "payment_method": "razorpay_test",
     }
 
     ORDERS[order_id] = order
 
-    # Reduce demo inventory
+    # Reduce inventory.
     for item in cart["items"]:
-
         product = get_product(
             item["product_id"]
         )
 
         if product is not None:
-            product["stock"] -= (
-                item["quantity"]
+            product["stock"] = max(
+                0,
+                product["stock"] - item["quantity"],
             )
 
-    # Clear cart
     CARTS[user_id] = {}
+
+    payment["status"] = "ORDER_CREATED"
+    payment["quickcart_order_id"] = order_id
 
     return {
         "success": True,
-        "message": "Order placed successfully.",
+        "message": "Paid order created.",
         "order": order,
     }
 
@@ -866,13 +929,9 @@ def checkout(
 def get_order(
     order_id: str,
 ) -> dict[str, Any]:
-    """
-    Get an order by order ID.
-    """
+    """Get an existing QuickCart order."""
 
-    order = ORDERS.get(
-        order_id
-    )
+    order = ORDERS.get(order_id)
 
     if order is None:
         return {
@@ -890,9 +949,7 @@ def get_order(
 def list_orders(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
-    """
-    List all orders for a user.
-    """
+    """List orders for a user."""
 
     orders = [
         order
@@ -908,18 +965,13 @@ def list_orders(
 
 
 # ============================================================
-# FASTAPI APPLICATION
+# FASTAPI APP
 # ============================================================
 
 @contextlib.asynccontextmanager
 async def lifespan(
     _app: FastAPI,
 ):
-    """
-    Start the MCP session manager when mounted
-    inside FastAPI.
-    """
-
     async with mcp.session_manager.run():
         yield
 
@@ -927,9 +979,7 @@ async def lifespan(
 app = FastAPI(
     title=APP_NAME,
     version=APP_VERSION,
-    description=(
-        "Agentic commerce MCP server for ChatGPT."
-    ),
+    description="Agentic commerce MCP server.",
     lifespan=lifespan,
 )
 
@@ -943,6 +993,7 @@ app.add_middleware(
     allow_origins=[
         "https://chatgpt.com",
         "https://chat.openai.com",
+        PUBLIC_BASE_URL,
     ],
     allow_credentials=True,
     allow_methods=[
@@ -969,34 +1020,41 @@ app.add_middleware(
 
 
 # ============================================================
-# NORMAL FASTAPI ROUTES
+# NORMAL ROUTES
 # ============================================================
 
 @app.get("/")
-async def root() -> dict[str, Any]:
+async def root():
     return {
         "name": APP_NAME,
         "version": APP_VERSION,
         "status": "online",
         "mcp_endpoint": MCP_URL,
-        "ui_resource": PRODUCT_UI_URI,
+        "razorpay": (
+            "configured"
+            if RAZORPAY_KEY_ID
+            else "not configured"
+        ),
     }
 
 
 @app.get("/health")
-async def health() -> dict[str, Any]:
+async def health():
     return {
         "status": "ok",
         "service": APP_NAME,
         "version": APP_VERSION,
         "products": len(PRODUCTS),
         "orders": len(ORDERS),
-        "ui": "enabled",
+        "payment_attempts": len(PAYMENTS),
+        "razorpay_test_mode": bool(
+            RAZORPAY_KEY_ID
+        ),
     }
 
 
 @app.get("/catalogue")
-async def catalogue() -> dict[str, Any]:
+async def catalogue():
     return {
         "success": True,
         "count": len(PRODUCTS),
@@ -1005,7 +1063,472 @@ async def catalogue() -> dict[str, Any]:
 
 
 # ============================================================
-# MCP TRANSPORT SECURITY
+# RAZORPAY PAYMENT PAGE
+#
+# IMPORTANT:
+# This page is hosted by YOUR FastAPI server.
+# The Razorpay secret is never sent here.
+# ============================================================
+
+@app.get(
+    "/payment/{razorpay_order_id}",
+    response_class=HTMLResponse,
+)
+async def payment_page(
+    razorpay_order_id: str,
+):
+    payment = PAYMENTS.get(
+        razorpay_order_id
+    )
+
+    if payment is None:
+        return HTMLResponse(
+            content="""
+            <h2>Payment session not found.</h2>
+            <p>Please create a new payment attempt.</p>
+            """,
+            status_code=404,
+        )
+
+    if not RAZORPAY_KEY_ID:
+        return HTMLResponse(
+            content="""
+            <h2>Razorpay is not configured.</h2>
+            """,
+            status_code=500,
+        )
+
+    amount = payment["amount_paise"]
+    user_id = payment["user_id"]
+
+    checkout_html = f"""
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta
+        name="viewport"
+        content="width=device-width,initial-scale=1"
+    >
+    <title>QuickCart Payment</title>
+
+    <style>
+        body {{
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            background: #f5f5f5;
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Inter",
+                sans-serif;
+        }}
+
+        .card {{
+            width: min(420px, calc(100% - 32px));
+            background: white;
+            padding: 28px;
+            border-radius: 20px;
+            box-shadow:
+                0 10px 40px
+                rgba(0,0,0,.08);
+        }}
+
+        h1 {{
+            margin: 0 0 8px;
+            font-size: 24px;
+        }}
+
+        .subtitle {{
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 24px;
+        }}
+
+        .amount {{
+            font-size: 32px;
+            font-weight: 800;
+            margin: 18px 0 24px;
+        }}
+
+        button {{
+            width: 100%;
+            border: none;
+            border-radius: 12px;
+            padding: 14px;
+            background: #111;
+            color: white;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+        }}
+
+        button:disabled {{
+            opacity: .6;
+        }}
+
+        .status {{
+            margin-top: 16px;
+            font-size: 14px;
+            color: #555;
+            line-height: 1.5;
+        }}
+
+        .success {{
+            color: #087443;
+        }}
+
+        .error {{
+            color: #b42318;
+        }}
+    </style>
+
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+</head>
+
+<body>
+
+<div class="card">
+
+    <h1>QuickCart Payment</h1>
+
+    <div class="subtitle">
+        Razorpay Test Mode
+    </div>
+
+    <div class="amount">
+        ₹{payment["amount_paise"] / 100:.2f}
+    </div>
+
+    <button
+        id="payButton"
+        onclick="startPayment()"
+    >
+        Pay Now
+    </button>
+
+    <div
+        id="status"
+        class="status"
+    >
+        Test payment only. No real money will be charged.
+    </div>
+
+</div>
+
+<script>
+
+const razorpayKey = {RAZORPAY_KEY_ID!r};
+const razorpayOrderId = {razorpay_order_id!r};
+const userId = {user_id!r};
+const amountPaise = {amount};
+
+function setStatus(
+    message,
+    className = ""
+) {{
+    const element =
+        document.getElementById("status");
+
+    element.className =
+        "status " + className;
+
+    element.textContent =
+        message;
+}}
+
+
+async function startPayment() {{
+
+    const button =
+        document.getElementById(
+            "payButton"
+        );
+
+    button.disabled = true;
+
+    try {{
+
+        setStatus(
+            "Opening Razorpay Checkout..."
+        );
+
+        const options = {{
+
+            key: razorpayKey,
+
+            amount: amountPaise,
+
+            currency: "INR",
+
+            name: "QuickCart",
+
+            description:
+                "QuickCart Test Payment",
+
+            order_id:
+                razorpayOrderId,
+
+            theme: {{
+                color: "#111111"
+            }},
+
+            handler:
+                async function(response) {{
+
+                    setStatus(
+                        "Verifying payment..."
+                    );
+
+                    try {{
+
+                        const verifyResponse =
+                            await fetch(
+                                "/payment/verify",
+                                {{
+                                    method: "POST",
+                                    headers: {{
+                                        "Content-Type":
+                                            "application/json"
+                                    }},
+                                    body:
+                                        JSON.stringify({{
+                                            user_id:
+                                                userId,
+
+                                            razorpay_order_id:
+                                                response.razorpay_order_id,
+
+                                            razorpay_payment_id:
+                                                response.razorpay_payment_id,
+
+                                            razorpay_signature:
+                                                response.razorpay_signature
+                                        }})
+                                }}
+                            );
+
+                        const result =
+                            await verifyResponse.json();
+
+                        if (
+                            !verifyResponse.ok ||
+                            !result.success
+                        ) {{
+                            throw new Error(
+                                result.error ||
+                                "Payment verification failed"
+                            );
+                        }}
+
+                        setStatus(
+                            "Payment verified successfully. "
+                            + "You can return to ChatGPT.",
+                            "success"
+                        );
+
+                        button.textContent =
+                            "Payment Successful";
+
+                    }} catch (error) {{
+
+                        setStatus(
+                            error.message ||
+                            "Payment verification failed.",
+                            "error"
+                        );
+
+                        button.disabled =
+                            false;
+                    }}
+                }},
+
+            modal: {{
+                ondismiss:
+                    function() {{
+                        setStatus(
+                            "Payment window closed."
+                        );
+
+                        button.disabled =
+                            false;
+                    }}
+            }}
+
+        }};
+
+        const razorpay =
+            new Razorpay(options);
+
+        razorpay.on(
+            "payment.failed",
+            function(response) {{
+                setStatus(
+                    "Payment failed: "
+                    + (
+                        response.error?.description
+                        || "Unknown error"
+                    ),
+                    "error"
+                );
+
+                button.disabled =
+                    false;
+            }}
+        );
+
+        razorpay.open();
+
+    }} catch (error) {{
+
+        console.error(error);
+
+        setStatus(
+            "Unable to start payment.",
+            "error"
+        );
+
+        button.disabled =
+            false;
+    }}
+}}
+
+</script>
+
+</body>
+</html>
+"""
+
+    return HTMLResponse(
+        checkout_html
+    )
+
+
+# ============================================================
+# RAZORPAY VERIFY ENDPOINT
+# ============================================================
+
+@app.post("/payment/verify")
+async def verify_payment(
+    request: Request,
+):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "Invalid JSON.",
+            },
+            status_code=400,
+        )
+
+    user_id = payload.get(
+        "user_id",
+        "demo-user",
+    )
+
+    razorpay_order_id = payload.get(
+        "razorpay_order_id"
+    )
+
+    razorpay_payment_id = payload.get(
+        "razorpay_payment_id"
+    )
+
+    razorpay_signature = payload.get(
+        "razorpay_signature"
+    )
+
+    if not all(
+        [
+            razorpay_order_id,
+            razorpay_payment_id,
+            razorpay_signature,
+        ]
+    ):
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    "Missing Razorpay payment fields."
+                ),
+            },
+            status_code=400,
+        )
+
+    payment = PAYMENTS.get(
+        razorpay_order_id
+    )
+
+    if payment is None:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    "Payment attempt not found."
+                ),
+            },
+            status_code=404,
+        )
+
+    if payment["user_id"] != user_id:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "User mismatch.",
+            },
+            status_code=403,
+        )
+
+    if payment["status"] in {
+        "PAID",
+        "ORDER_CREATED",
+    }:
+        return {
+            "success": True,
+            "status": payment["status"],
+            "message": "Payment already verified.",
+        }
+
+    valid = verify_razorpay_signature(
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature,
+    )
+
+    if not valid:
+        payment["status"] = "VERIFICATION_FAILED"
+
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    "Razorpay signature verification failed."
+                ),
+            },
+            status_code=400,
+        )
+
+    payment["status"] = "PAID"
+    payment["payment_id"] = razorpay_payment_id
+    payment["signature"] = razorpay_signature
+
+    return {
+        "success": True,
+        "status": "PAID",
+        "message": (
+            "Payment verified successfully."
+        ),
+        "razorpay_order_id": razorpay_order_id,
+        "razorpay_payment_id": razorpay_payment_id,
+    }
+
+
+# ============================================================
+# MCP STREAMABLE HTTP
 # ============================================================
 
 transport_security = TransportSecuritySettings(
@@ -1021,20 +1544,12 @@ transport_security = TransportSecuritySettings(
 )
 
 
-# ============================================================
-# MCP STREAMABLE HTTP
-# ============================================================
-
 mcp_http_app = mcp.streamable_http_app(
     streamable_http_path="/",
     json_response=True,
     transport_security=transport_security,
 )
 
-
-# ============================================================
-# MOUNT MCP
-# ============================================================
 
 app.mount(
     "/mcp",
@@ -1043,7 +1558,7 @@ app.mount(
 
 
 # ============================================================
-# LOCAL DEVELOPMENT
+# LOCAL START
 # ============================================================
 
 if __name__ == "__main__":
