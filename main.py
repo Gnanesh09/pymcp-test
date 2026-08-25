@@ -51,7 +51,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "stock": 50,
         "unit": "5 kg",
         "description": "Premium whole wheat flour.",
-        "image": "https://placehold.co/600x400/png?text=Aashirvaad+Atta",
+        "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQi8qXYSl439pmbK5h5T8GcGYJtQtRkxrnKDYbCRYy7aQ&s=10",
         "tags": ["atta", "flour", "wheat", "grocery"],
     },
     {
@@ -66,7 +66,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "stock": 100,
         "unit": "1 kg",
         "description": "Iodised vacuum evaporated salt.",
-        "image": "https://placehold.co/600x400/png?text=Tata+Salt",
+        "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRa7lkQncRgI3d52YGb2MGmsofKoauTJoLvrJaBUWppVg&s=10",
         "tags": ["salt", "grocery"],
     },
     {
@@ -81,7 +81,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "stock": 40,
         "unit": "1 litre",
         "description": "Fresh toned milk.",
-        "image": "https://placehold.co/600x400/png?text=Amul+Milk",
+        "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSGaiqZ-X_6OZLVY0cbRoHSLv-u_YsbqtBAm_C6RggvLA&s=10",
         "tags": ["milk", "dairy", "breakfast"],
     },
     {
@@ -96,7 +96,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "stock": 25,
         "unit": "500 g",
         "description": "Pasteurised table butter.",
-        "image": "https://placehold.co/600x400/png?text=Amul+Butter",
+        "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTtZt3ju1kB5B4tsHu3KrQ-PRVe5xcSBXBf9NZbEPlF_A&s",
         "tags": ["butter", "dairy"],
     },
     {
@@ -111,7 +111,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "stock": 200,
         "unit": "70 g",
         "description": "Instant noodles.",
-        "image": "https://placehold.co/600x400/png?text=Maggi",
+        "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT1YIdP9S9iKozp1c7D3XMZjK4riYeeLQD1kac9QMpV5Q&s=10",
         "tags": ["maggi", "noodles", "instant", "snacks"],
     },
     {
@@ -126,7 +126,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "stock": 120,
         "unit": "50 g",
         "description": "Spicy potato chips.",
-        "image": "https://placehold.co/600x400/png?text=Lays",
+        "image": "https://banerjeesupermarket.com/wp-content/uploads/2026/04/81rQQr3BvWL._SL1500_-600x723.jpg",
         "tags": ["chips", "snacks"],
     },
     {
@@ -141,7 +141,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "stock": 80,
         "unit": "750 ml",
         "description": "Carbonated soft drink.",
-        "image": "https://placehold.co/600x400/png?text=Coca-Cola",
+        "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTmgriAj9WTl8bqGCJRG7uQd5F19pEuYH4mn_1ryHIYKg&s=10",
         "tags": ["coke", "drink", "beverage", "soft drink"],
     },
     {
@@ -156,7 +156,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "stock": 35,
         "unit": "250 ml",
         "description": "Energy drink.",
-        "image": "https://placehold.co/600x400/png?text=Red+Bull",
+        "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTEHbTunV3BTGk2CFf6WaoWWYYPa1QyQQz8tSYKrmlXCA&s=10",
         "tags": ["energy", "drink", "beverage"],
     },
     {
@@ -171,7 +171,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "stock": 20,
         "unit": "2 kg",
         "description": "Detergent powder for washing machines.",
-        "image": "https://placehold.co/600x400/png?text=Surf+Excel",
+        "image": "https://encrypted-tbn1.gstatic.com/shopping?q=tbn:ANd9GcS1xQGzDp2BZq8vjTvS7Wrp3vrWNSOUbNsEozv_8vS3ZqSv9XnD40lVVttATUuNMGT1SCy6FeRGQLPdvOtO5qs9dCyieobHF60qcedA9hNwG-7xpf2gvD0Wqz4567YIsm7wq2xlP8o&usqp=CAc",
         "tags": ["detergent", "washing", "household"],
     },
     {
@@ -186,7 +186,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "stock": 60,
         "unit": "150 g",
         "description": "Fresh breath toothpaste.",
-        "image": "https://placehold.co/600x400/png?text=Colgate",
+        "image": "https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQcGOP1-iLFVa741jL0HGPQJ0gsGmOsrFrXmiEAL4dQ97K04aljr25r9RvaSFCgk76RD7ep9UwAxO3nZdpA2Ny1c6u_p2igD8Yf7oDjyr59NbmfcYcyJKrSpQ",
         "tags": ["toothpaste", "personal care"],
     },
 ]
