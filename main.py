@@ -25,13 +25,12 @@ PUBLIC_HOST = "pymcp-test.onrender.com"
 
 MCP_URL = f"https://{PUBLIC_HOST}/mcp"
 
-# Apps SDK / MCP Apps UI resource
+# ChatGPT Apps UI resource
 PRODUCT_UI_URI = "ui://quickcart/product-catalogue.html"
 
-# HTML file must be next to main.py
+# product_catalogue.html must be beside main.py
 PRODUCT_UI_FILE = (
-    Path(__file__).resolve().parent
-    / "product_catalogue.html"
+    Path(__file__).resolve().parent / "product_catalogue.html"
 )
 
 
@@ -197,6 +196,9 @@ PRODUCTS: list[dict[str, Any]] = [
 # DEMO STATE
 # ============================================================
 
+# Demo only.
+# Replace with PostgreSQL/MongoDB for production.
+
 CARTS: dict[str, dict[str, int]] = {}
 ORDERS: dict[str, dict[str, Any]] = {}
 
@@ -268,22 +270,18 @@ def calculate_cart(
             }
         )
 
-    delivery_fee = (
-        39
-        if 0 < subtotal < 499
-        else 0
-    )
+    delivery_fee = 39 if 0 < subtotal < 499 else 0
+    total = subtotal + delivery_fee
 
     return {
         "user_id": user_id,
         "items": items,
         "item_count": sum(
-            item["quantity"]
-            for item in items
+            item["quantity"] for item in items
         ),
         "subtotal": subtotal,
         "delivery_fee": delivery_fee,
-        "total": subtotal + delivery_fee,
+        "total": total,
         "currency": "INR",
     }
 
@@ -300,73 +298,39 @@ def load_product_ui() -> str:
 
 
 # ============================================================
-# MCP APPS UI EXTENSION
+# MCP APPS EXTENSION
+#
+# IMPORTANT:
+# Apps/resource/tool registration happens BEFORE
+# MCPServer(...) is created.
 # ============================================================
 
 apps = Apps()
+
 apps.add_html_resource(
     PRODUCT_UI_URI,
     load_product_ui(),
+    name="quickcart-product-catalogue",
+    title="QuickCart Product Catalogue",
+    description=(
+        "QuickCart product catalogue with images, "
+        "prices, ratings and Add buttons."
+    ),
+    prefers_border=True,
 )
 
 
 # ============================================================
-# MCP SERVER
-# ============================================================
-
-mcp = MCPServer(
-    APP_NAME,
-    instructions="""
-You are QuickCart, an agentic shopping assistant.
-
-You can:
-- search products
-- browse the catalogue
-- inspect product details
-- add products to cart
-- update cart quantities
-- remove products
-- view the cart
-- checkout
-- inspect orders
-
-SHOPPING RULES:
-
-1. When the user asks to find/search/show products,
-   use search_products() or get_catalogue().
-
-2. Product search and catalogue tools have an interactive UI.
-   When supported by the client, the UI should be displayed.
-
-3. Never invent product names, prices, stock or IDs.
-
-4. For multi-product requests, search for all requested
-   products when necessary.
-
-5. Before checkout, inspect the cart.
-
-6. Only actually place an order when the user explicitly
-   requests buying, ordering or checkout.
-
-7. checkout(confirm=False) MUST NOT create an order.
-
-8. After successful checkout, report the real order ID
-   returned by the tool.
-""",
-    extensions=[apps],
-)
-
-
-# ============================================================
-# PRODUCT TOOLS
+# UI-BOUND PRODUCT TOOLS
+#
+# These MUST be registered BEFORE MCPServer(...)
 # ============================================================
 
 @apps.tool(
     resource_uri=PRODUCT_UI_URI,
-    visibility=["model", "app"],
     title="Search Products",
     description=(
-        "Search QuickCart products and display them "
+        "Search QuickCart products and show them "
         "in the interactive product catalogue."
     ),
 )
@@ -385,15 +349,12 @@ def search_products(
         return {
             "success": False,
             "message": "Search query cannot be empty.",
-            "products": [],
+            "query": query,
             "count": 0,
+            "products": [],
         }
 
-    limit = max(
-        1,
-        min(limit, 50),
-    )
-
+    limit = max(1, min(limit, 50))
     terms = normalize(query).split()
 
     matches: list[
@@ -413,7 +374,7 @@ def search_products(
             if product["price"] > max_price:
                 continue
 
-        searchable = normalize(
+        searchable_text = normalize(
             " ".join(
                 [
                     product["name"],
@@ -428,7 +389,7 @@ def search_products(
         score = sum(
             1
             for term in terms
-            if term in searchable
+            if term in searchable_text
         )
 
         if score > 0:
@@ -444,7 +405,7 @@ def search_products(
         )
     )
 
-    selected = [
+    selected_products = [
         product
         for _, product in matches[:limit]
     ]
@@ -452,13 +413,152 @@ def search_products(
     return {
         "success": True,
         "query": query,
-        "count": len(selected),
+        "count": len(selected_products),
         "products": [
             public_product(product)
-            for product in selected
+            for product in selected_products
         ],
     }
 
+
+@apps.tool(
+    resource_uri=PRODUCT_UI_URI,
+    title="Product Catalogue",
+    description=(
+        "Browse QuickCart products by category "
+        "using the interactive product catalogue."
+    ),
+)
+def get_catalogue(
+    category: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """
+    Browse all products or a specific category.
+    """
+
+    limit = max(1, min(limit, 50))
+
+    products = PRODUCTS
+
+    if category is not None:
+        products = [
+            product
+            for product in products
+            if (
+                normalize(product["category"])
+                == normalize(category)
+            )
+        ]
+
+    selected_products = products[:limit]
+
+    return {
+        "success": True,
+        "category": category,
+        "count": len(selected_products),
+        "products": [
+            public_product(product)
+            for product in selected_products
+        ],
+    }
+
+
+@apps.tool(
+    resource_uri=PRODUCT_UI_URI,
+    title="Product Details",
+    description=(
+        "Show product information in the "
+        "QuickCart product interface."
+    ),
+)
+def get_product_details(
+    product_id: str,
+) -> dict[str, Any]:
+    """
+    Get detailed information about a product.
+    """
+
+    product = get_product(product_id)
+
+    if product is None:
+        return {
+            "success": False,
+            "error": "Product not found.",
+            "count": 0,
+            "products": [],
+        }
+
+    return {
+        "success": True,
+        "count": 1,
+        "products": [
+            public_product(product)
+        ],
+    }
+
+
+# ============================================================
+# MCP SERVER
+#
+# Apps must already contain resources/tools here.
+# ============================================================
+
+mcp = MCPServer(
+    APP_NAME,
+    instructions="""
+You are QuickCart, an agentic shopping assistant.
+
+AVAILABLE SHOPPING CAPABILITIES:
+
+- list categories
+- search products
+- browse catalogue
+- inspect product details
+- add products to cart
+- update cart quantities
+- remove products
+- view cart
+- clear cart
+- checkout
+- view orders
+- check order status
+
+IMPORTANT SHOPPING BEHAVIOR:
+
+1. When the user says "find", "search", "show me",
+   "browse", or similar product requests, use
+   search_products() or get_catalogue().
+
+2. Product search/catalogue/product-detail tools have an
+   interactive UI when the connected ChatGPT client supports MCP Apps.
+
+3. Never invent products, prices, stock, ratings or IDs.
+
+4. Use returned product IDs when adding items to the cart.
+
+5. For multi-item requests, search each required product
+   when necessary.
+
+6. Before ordering, inspect the current cart.
+
+7. checkout(confirm=False) must never create an order.
+
+8. Only call checkout(confirm=True) when the user explicitly
+   asks to buy, order, checkout, or confirm the purchase.
+
+9. After a successful checkout, report the real order ID
+   returned by checkout().
+""",
+    extensions=[apps],
+)
+
+
+# ============================================================
+# NORMAL MCP TOOLS
+#
+# These are registered AFTER MCPServer exists.
+# ============================================================
 
 @mcp.tool()
 def list_categories() -> dict[str, Any]:
@@ -479,92 +579,6 @@ def list_categories() -> dict[str, Any]:
         "count": len(categories),
     }
 
-
-@apps.tool(
-    resource_uri=PRODUCT_UI_URI,
-    visibility=["model", "app"],
-    title="Product Catalogue",
-    description=(
-        "Browse QuickCart products by category "
-        "using the interactive catalogue."
-    ),
-)
-def get_catalogue(
-    category: str | None = None,
-    limit: int = 20,
-) -> dict[str, Any]:
-    """
-    Browse all products or a category.
-    """
-
-    limit = max(
-        1,
-        min(limit, 50),
-    )
-
-    products = PRODUCTS
-
-    if category is not None:
-        products = [
-            product
-            for product in products
-            if (
-                normalize(product["category"])
-                == normalize(category)
-            )
-        ]
-
-    selected = products[:limit]
-
-    return {
-        "success": True,
-        "category": category,
-        "count": len(selected),
-        "products": [
-            public_product(product)
-            for product in selected
-        ],
-    }
-
-
-@apps.tool(
-    resource_uri=PRODUCT_UI_URI,
-    visibility=["model", "app"],
-    title="Product Details",
-    description=(
-        "Display detailed information about "
-        "a selected product."
-    ),
-)
-def get_product_details(
-    product_id: str,
-) -> dict[str, Any]:
-    """
-    Get detailed product information.
-    """
-
-    product = get_product(product_id)
-
-    if product is None:
-        return {
-            "success": False,
-            "error": "Product not found.",
-            "products": [],
-            "count": 0,
-        }
-
-    return {
-        "success": True,
-        "count": 1,
-        "products": [
-            public_product(product)
-        ],
-    }
-
-
-# ============================================================
-# CART TOOLS
-# ============================================================
 
 @mcp.tool()
 def add_to_cart(
@@ -597,13 +611,13 @@ def add_to_cart(
         {},
     )
 
-    current = cart.get(
+    current_quantity = cart.get(
         product_id,
         0,
     )
 
     new_quantity = (
-        current + quantity
+        current_quantity + quantity
     )
 
     if new_quantity > product["stock"]:
@@ -634,8 +648,8 @@ def update_cart_item(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
     """
-    Set an exact product quantity.
-    Use quantity=0 to remove the item.
+    Set the exact quantity of a cart item.
+    quantity=0 removes it.
     """
 
     if quantity < 0:
@@ -664,6 +678,7 @@ def update_cart_item(
             product_id,
             None,
         )
+
     else:
         if quantity > product["stock"]:
             return {
@@ -688,7 +703,7 @@ def remove_from_cart(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
     """
-    Remove a product from the cart.
+    Remove a product completely from the cart.
     """
 
     cart = CARTS.setdefault(
@@ -713,7 +728,7 @@ def get_cart(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
     """
-    Return the current shopping cart.
+    Show the current shopping cart.
     """
 
     return {
@@ -727,7 +742,7 @@ def clear_cart(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
     """
-    Empty the shopping cart.
+    Remove all products from the cart.
     """
 
     CARTS[user_id] = {}
@@ -753,11 +768,10 @@ def checkout(
     payment_method: str = "cash_on_delivery",
 ) -> dict[str, Any]:
     """
-    Create an order from the current cart.
+    Place the cart as an order.
 
-    confirm=False only previews the checkout.
-
-    confirm=True actually creates the order.
+    confirm=False = preview only.
+    confirm=True = actually create the order.
     """
 
     cart = calculate_cart(user_id)
@@ -774,15 +788,12 @@ def checkout(
             "requires_confirmation": True,
             "message": (
                 "Checkout preview only. "
-                "No order has been created."
+                "No order was created."
             ),
             "cart": cart,
         }
 
-    # --------------------------------------------------------
     # Final stock check
-    # --------------------------------------------------------
-
     for item in cart["items"]:
 
         product = get_product(
@@ -793,9 +804,8 @@ def checkout(
             return {
                 "success": False,
                 "error": (
-                    f"Product "
-                    f"{item['product_id']} "
-                    "is unavailable."
+                    f"Product {item['product_id']} "
+                    "is no longer available."
                 ),
             }
 
@@ -842,14 +852,12 @@ def checkout(
                 item["quantity"]
             )
 
-    # Empty cart
+    # Clear cart
     CARTS[user_id] = {}
 
     return {
         "success": True,
-        "message": (
-            "Order placed successfully."
-        ),
+        "message": "Order placed successfully.",
         "order": order,
     }
 
@@ -859,7 +867,7 @@ def get_order(
     order_id: str,
 ) -> dict[str, Any]:
     """
-    Get the status/details of an order.
+    Get an order by order ID.
     """
 
     order = ORDERS.get(
@@ -900,7 +908,7 @@ def list_orders(
 
 
 # ============================================================
-# FASTAPI APP
+# FASTAPI APPLICATION
 # ============================================================
 
 @contextlib.asynccontextmanager
@@ -908,8 +916,10 @@ async def lifespan(
     _app: FastAPI,
 ):
     """
-    Start the MCP session manager for FastAPI.
+    Start the MCP session manager when mounted
+    inside FastAPI.
     """
+
     async with mcp.session_manager.run():
         yield
 
@@ -918,7 +928,7 @@ app = FastAPI(
     title=APP_NAME,
     version=APP_VERSION,
     description=(
-        "QuickCart Agentic Commerce MCP Server"
+        "Agentic commerce MCP server for ChatGPT."
     ),
     lifespan=lifespan,
 )
@@ -998,18 +1008,16 @@ async def catalogue() -> dict[str, Any]:
 # MCP TRANSPORT SECURITY
 # ============================================================
 
-transport_security = (
-    TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=[
-            PUBLIC_HOST,
-            f"{PUBLIC_HOST}:443",
-        ],
-        allowed_origins=[
-            "https://chatgpt.com",
-            "https://chat.openai.com",
-        ],
-    )
+transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[
+        PUBLIC_HOST,
+        f"{PUBLIC_HOST}:443",
+    ],
+    allowed_origins=[
+        "https://chatgpt.com",
+        "https://chat.openai.com",
+    ],
 )
 
 
