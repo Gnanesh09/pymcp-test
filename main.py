@@ -37,8 +37,10 @@ BASE_DIR = Path(__file__).resolve().parent
 PRODUCT_UI_FILE = BASE_DIR / "product_catalogue.html"
 
 # Razorpay
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+# RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+RAZORPAY_KEY_ID = "rzp_test_SIjuTFfoEyDAWa"
+# RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+RAZORPAY_KEY_SECRET = "iOSIi09qMHX2pp7rqTkhMHPL"
 RAZORPAY_API_BASE = "https://api.razorpay.com/v1"
 
 
