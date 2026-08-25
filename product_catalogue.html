@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  />
+
+  <title>QuickCart</title>
+
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --card: #ffffff;
+      --text: #171717;
+      --muted: #717171;
+      --border: #e8e8e8;
+      --soft: #f7f7f7;
+      --accent: #111111;
+      --accent-text: #ffffff;
+      --danger: #d92d20;
+      --success: #198754;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101010;
+        --card: #171717;
+        --text: #f5f5f5;
+        --muted: #a4a4a4;
+        --border: #2d2d2d;
+        --soft: #202020;
+        --accent: #ffffff;
+        --accent-text: #111111;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Inter",
+        "Segoe UI",
+        sans-serif;
+    }
+
+    .app {
+      padding: 12px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .title {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .count {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .products {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .product {
+      display: grid;
+      grid-template-columns: 76px 1fr auto;
+      gap: 12px;
+      align-items: center;
+
+      padding: 9px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--card);
+
+      transition:
+        transform 120ms ease,
+        border-color 120ms ease;
+    }
+
+    .product:hover {
+      transform: translateY(-1px);
+    }
+
+    .image-wrap {
+      width: 76px;
+      height: 76px;
+
+      border-radius: 11px;
+      overflow: hidden;
+
+      background: var(--soft);
+      border: 1px solid var(--border);
+    }
+
+    .image-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .details {
+      min-width: 0;
+    }
+
+    .name {
+      font-size: 14px;
+      line-height: 1.3;
+      font-weight: 650;
+
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .brand {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .meta {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 7px;
+
+      margin-top: 6px;
+      color: var(--muted);
+
+      font-size: 11px;
+    }
+
+    .rating {
+      color: #e0a100;
+      font-weight: 700;
+    }
+
+    .price-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 5px;
+    }
+
+    .price {
+      font-weight: 800;
+      font-size: 15px;
+    }
+
+    .mrp {
+      font-size: 11px;
+      color: var(--muted);
+      text-decoration: line-through;
+    }
+
+    .discount {
+      color: var(--success);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    button {
+      border: 0;
+      outline: none;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .add-btn {
+      min-width: 60px;
+      padding: 8px 10px;
+
+      border-radius: 9px;
+
+      background: var(--accent);
+      color: var(--accent-text);
+
+      font-size: 12px;
+      font-weight: 700;
+
+      transition:
+        transform 120ms ease,
+        opacity 120ms ease;
+    }
+
+    .add-btn:active {
+      transform: scale(0.96);
+    }
+
+    .add-btn[disabled] {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .empty {
+      padding: 28px 12px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 13px;
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 12px;
+
+      transform: translateX(-50%);
+
+      padding: 8px 12px;
+      border-radius: 999px;
+
+      background: var(--accent);
+      color: var(--accent-text);
+
+      font-size: 12px;
+      font-weight: 600;
+
+      opacity: 0;
+      pointer-events: none;
+
+      transition: opacity 160ms ease;
+    }
+
+    .toast.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="app">
+
+    <div class="header">
+      <div
+        id="title"
+        class="title"
+      >
+        QuickCart
+      </div>
+
+      <div
+        id="count"
+        class="count"
+      >
+        0 products
+      </div>
+    </div>
+
+    <div
+      id="products"
+      class="products"
+    ></div>
+
+  </div>
+
+  <div
+    id="toast"
+    class="toast"
+  ></div>
+
+
+  <script>
+
+    // ==========================================================
+    // CHATGPT APPS SDK STATE
+    // ==========================================================
+
+    function getToolOutput() {
+      return window.openai?.toolOutput || {};
+    }
+
+
+    function getProducts() {
+      const output = getToolOutput();
+
+      if (
+        output &&
+        Array.isArray(output.products)
+      ) {
+        return output.products;
+      }
+
+      return [];
+    }
+
+
+    // ==========================================================
+    // TOAST
+    // ==========================================================
+
+    let toastTimer = null;
+
+    function showToast(message) {
+
+      const toast =
+        document.getElementById("toast");
+
+      toast.textContent = message;
+      toast.classList.add("show");
+
+      clearTimeout(toastTimer);
+
+      toastTimer = setTimeout(() => {
+        toast.classList.remove("show");
+      }, 1800);
+    }
+
+
+    // ==========================================================
+    // ADD TO CART
+    // ==========================================================
+
+    async function addToCart(productId) {
+
+      if (
+        !window.openai ||
+        typeof window.openai.callTool !== "function"
+      ) {
+        showToast("ChatGPT tool bridge unavailable");
+        return;
+      }
+
+      try {
+
+        const result =
+          await window.openai.callTool(
+            "add_to_cart",
+            {
+              product_id: productId,
+              quantity: 1,
+            }
+          );
+
+        if (
+          result &&
+          result.structuredContent
+        ) {
+
+          showToast("Added to cart");
+
+        } else if (
+          result &&
+          result.success
+        ) {
+
+          showToast("Added to cart");
+
+        } else {
+
+          showToast("Could not add item");
+
+        }
+
+      } catch (error) {
+
+        console.error(
+          "add_to_cart error:",
+          error
+        );
+
+        showToast("Could not add item");
+      }
+    }
+
+
+    // ==========================================================
+    // RENDER PRODUCTS
+    // ==========================================================
+
+    function render() {
+
+      const output =
+        getToolOutput();
+
+      const products =
+        getProducts();
+
+      const title =
+        output.title ||
+        "QuickCart";
+
+      const titleElement =
+        document.getElementById("title");
+
+      const countElement =
+        document.getElementById("count");
+
+      const productsElement =
+        document.getElementById("products");
+
+
+      titleElement.textContent =
+        title;
+
+      countElement.textContent =
+        `${products.length} ${
+          products.length === 1
+            ? "product"
+            : "products"
+        }`;
+
+
+      if (!products.length) {
+
+        productsElement.innerHTML = `
+          <div class="empty">
+            No products found.
+          </div>
+        `;
+
+        return;
+      }
+
+
+      productsElement.innerHTML =
+        products.map(product => {
+
+          const safeName =
+            escapeHtml(product.name);
+
+          const safeBrand =
+            escapeHtml(product.brand || "");
+
+          const safeImage =
+            escapeHtml(product.image || "");
+
+          const price =
+            Number(product.price || 0);
+
+          const mrp =
+            Number(product.mrp || 0);
+
+          const rating =
+            Number(product.rating || 0);
+
+          const discount =
+            Number(product.discount || 0);
+
+          const stock =
+            Number(product.stock || 0);
+
+          const disabled =
+            stock <= 0
+              ? "disabled"
+              : "";
+
+          return `
+            <div class="product">
+
+              <div class="image-wrap">
+                ${
+                  safeImage
+                    ? `
+                      <img
+                        src="${safeImage}"
+                        alt="${safeName}"
+                        loading="lazy"
+                      />
+                    `
+                    : ""
+                }
+              </div>
+
+              <div class="details">
+
+                <div class="name">
+                  ${safeName}
+                </div>
+
+                ${
+                  safeBrand
+                    ? `
+                      <div class="brand">
+                        ${safeBrand}
+                      </div>
+                    `
+                    : ""
+                }
+
+                <div class="meta">
+
+                  ${
+                    rating
+                      ? `
+                        <span class="rating">
+                          ★ ${rating}
+                        </span>
+                      `
+                      : ""
+                  }
+
+                  ${
+                    product.unit
+                      ? `
+                        <span>
+                          ${escapeHtml(product.unit)}
+                        </span>
+                      `
+                      : ""
+                  }
+
+                  ${
+                    stock > 0
+                      ? `
+                        <span>
+                          In stock
+                        </span>
+                      `
+                      : `
+                        <span>
+                          Out of stock
+                        </span>
+                      `
+                  }
+
+                </div>
+
+                <div class="price-row">
+
+                  <span class="price">
+                    ₹${price}
+                  </span>
+
+                  ${
+                    mrp > price
+                      ? `
+                        <span class="mrp">
+                          ₹${mrp}
+                        </span>
+                      `
+                      : ""
+                  }
+
+                  ${
+                    discount > 0
+                      ? `
+                        <span class="discount">
+                          ${discount}% OFF
+                        </span>
+                      `
+                      : ""
+                  }
+
+                </div>
+
+              </div>
+
+              <div class="actions">
+
+                <button
+                  class="add-btn"
+                  ${disabled}
+                  data-product-id="${escapeHtml(product.id)}"
+                >
+                  ${
+                    stock > 0
+                      ? "Add"
+                      : "Sold out"
+                  }
+                </button>
+
+              </div>
+
+            </div>
+          `;
+        }).join("");
+
+
+      document
+        .querySelectorAll(".add-btn")
+        .forEach(button => {
+
+          button.addEventListener(
+            "click",
+            () => {
+
+              const productId =
+                button.dataset.productId;
+
+              if (!productId) {
+                return;
+              }
+
+              addToCart(
+                productId
+              );
+            }
+          );
+
+        });
+    }
+
+
+    // ==========================================================
+    // HTML ESCAPE
+    // ==========================================================
+
+    function escapeHtml(value) {
+
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+
+    // ==========================================================
+    // INITIAL RENDER
+    // ==========================================================
+
+    render();
+
+
+    // ==========================================================
+    // CHATGPT STATE UPDATES
+    // ==========================================================
+
+    window.addEventListener(
+      "openai:set_globals",
+      () => {
+        render();
+      },
+      {
+        passive: true,
+      }
+    );
+
+  </script>
+
+</body>
+</html>

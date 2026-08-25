@@ -3,12 +3,14 @@ from __future__ import annotations
 import contextlib
 import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from mcp.server import MCPServer
+from mcp.server.apps import Apps
 from mcp.server.transport_security import TransportSecuritySettings
 
 
@@ -17,13 +19,20 @@ from mcp.server.transport_security import TransportSecuritySettings
 # ============================================================
 
 APP_NAME = "QuickCart MCP"
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 
-# Render hostname
 PUBLIC_HOST = "pymcp-test.onrender.com"
 
-# The MCP URL will be:
-# https://pymcp-test.onrender.com/mcp
+MCP_URL = f"https://{PUBLIC_HOST}/mcp"
+
+# Apps SDK / MCP Apps UI resource
+PRODUCT_UI_URI = "ui://quickcart/product-catalogue.html"
+
+# HTML file must be next to main.py
+PRODUCT_UI_FILE = (
+    Path(__file__).resolve().parent
+    / "product_catalogue.html"
+)
 
 
 # ============================================================
@@ -187,8 +196,6 @@ PRODUCTS: list[dict[str, Any]] = [
 # ============================================================
 # DEMO STATE
 # ============================================================
-# For testing only.
-# Replace with PostgreSQL/MongoDB in production.
 
 CARTS: dict[str, dict[str, int]] = {}
 ORDERS: dict[str, dict[str, Any]] = {}
@@ -204,14 +211,19 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def get_product(product_id: str) -> dict[str, Any] | None:
+def get_product(
+    product_id: str,
+) -> dict[str, Any] | None:
     for product in PRODUCTS:
         if product["id"] == product_id:
             return product
+
     return None
 
 
-def public_product(product: dict[str, Any]) -> dict[str, Any]:
+def public_product(
+    product: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "id": product["id"],
         "name": product["name"],
@@ -226,36 +238,6 @@ def public_product(product: dict[str, Any]) -> dict[str, Any]:
         "description": product["description"],
         "image": product["image"],
     }
-
-
-def build_catalogue_text(
-    products: list[dict[str, Any]],
-) -> str:
-    if not products:
-        return "No matching products found."
-
-    blocks: list[str] = []
-
-    for product in products:
-        discount = ""
-
-        if product["discount"] > 0:
-            discount = f" | {product['discount']}% OFF"
-
-        blocks.append(
-            f"### {product['name']}\n"
-            f"Brand: {product['brand']}\n"
-            f"Price: ₹{product['price']}\n"
-            f"MRP: ₹{product['mrp']}\n"
-            f"Rating: ⭐ {product['rating']}\n"
-            f"Unit: {product['unit']}\n"
-            f"Stock: {product['stock']}\n"
-            f"{discount}\n"
-            f"Product ID: {product['id']}\n"
-            f"Image: {product['image']}"
-        )
-
-    return "\n\n--------------------\n\n".join(blocks)
 
 
 def calculate_cart(
@@ -286,24 +268,46 @@ def calculate_cart(
             }
         )
 
-    delivery_fee = 0
-
-    if subtotal > 0 and subtotal < 499:
-        delivery_fee = 39
-
-    total = subtotal + delivery_fee
+    delivery_fee = (
+        39
+        if 0 < subtotal < 499
+        else 0
+    )
 
     return {
         "user_id": user_id,
         "items": items,
         "item_count": sum(
-            item["quantity"] for item in items
+            item["quantity"]
+            for item in items
         ),
         "subtotal": subtotal,
         "delivery_fee": delivery_fee,
-        "total": total,
+        "total": subtotal + delivery_fee,
         "currency": "INR",
     }
+
+
+def load_product_ui() -> str:
+    if not PRODUCT_UI_FILE.exists():
+        raise FileNotFoundError(
+            f"Missing UI file: {PRODUCT_UI_FILE}"
+        )
+
+    return PRODUCT_UI_FILE.read_text(
+        encoding="utf-8"
+    )
+
+
+# ============================================================
+# MCP APPS UI EXTENSION
+# ============================================================
+
+apps = Apps()
+apps.add_html_resource(
+    PRODUCT_UI_URI,
+    load_product_ui(),
+)
 
 
 # ============================================================
@@ -315,26 +319,41 @@ mcp = MCPServer(
     instructions="""
 You are QuickCart, an agentic shopping assistant.
 
-You have tools for:
-- browsing products
-- searching products
-- getting product details
-- managing a shopping cart
-- creating orders
-- checking order status
+You can:
+- search products
+- browse the catalogue
+- inspect product details
+- add products to cart
+- update cart quantities
+- remove products
+- view the cart
+- checkout
+- inspect orders
 
-Rules:
+SHOPPING RULES:
 
-1. When the user asks to find something, search first.
-2. Never invent product information.
-3. Use product IDs returned by search/catalogue tools.
-4. For multi-product requests, search for each required product
-   when necessary.
-5. Before ordering, inspect the current cart.
-6. Never call checkout with confirm=true unless the user has
-   explicitly requested the purchase/order/checkout.
-7. After an order succeeds, return the order ID and total.
+1. When the user asks to find/search/show products,
+   use search_products() or get_catalogue().
+
+2. Product search and catalogue tools have an interactive UI.
+   When supported by the client, the UI should be displayed.
+
+3. Never invent product names, prices, stock or IDs.
+
+4. For multi-product requests, search for all requested
+   products when necessary.
+
+5. Before checkout, inspect the cart.
+
+6. Only actually place an order when the user explicitly
+   requests buying, ordering or checkout.
+
+7. checkout(confirm=False) MUST NOT create an order.
+
+8. After successful checkout, report the real order ID
+   returned by the tool.
 """,
+    extensions=[apps],
 )
 
 
@@ -342,23 +361,15 @@ Rules:
 # PRODUCT TOOLS
 # ============================================================
 
-@mcp.tool()
-def list_categories() -> dict[str, Any]:
-    """
-    List all available shopping categories.
-    """
-    categories = sorted(
-        {product["category"] for product in PRODUCTS}
-    )
-
-    return {
-        "success": True,
-        "categories": categories,
-        "count": len(categories),
-    }
-
-
-@mcp.tool()
+@apps.tool(
+    resource_uri=PRODUCT_UI_URI,
+    visibility=["model", "app"],
+    title="Search Products",
+    description=(
+        "Search QuickCart products and display them "
+        "in the interactive product catalogue."
+    ),
+)
 def search_products(
     query: str,
     category: str | None = None,
@@ -366,32 +377,43 @@ def search_products(
     limit: int = 8,
 ) -> dict[str, Any]:
     """
-    Search the product catalogue by name, brand, category,
-    description, or tags.
+    Search products by name, brand, category,
+    description or tags.
     """
+
     if not query.strip():
         return {
             "success": False,
-            "error": "Search query cannot be empty.",
+            "message": "Search query cannot be empty.",
+            "products": [],
+            "count": 0,
         }
 
-    limit = max(1, min(limit, 50))
+    limit = max(
+        1,
+        min(limit, 50),
+    )
 
     terms = normalize(query).split()
 
-    matches: list[tuple[int, dict[str, Any]]] = []
+    matches: list[
+        tuple[int, dict[str, Any]]
+    ] = []
 
     for product in PRODUCTS:
 
         if category is not None:
-            if normalize(product["category"]) != normalize(category):
+            if (
+                normalize(product["category"])
+                != normalize(category)
+            ):
                 continue
 
         if max_price is not None:
             if product["price"] > max_price:
                 continue
 
-        searchable_text = normalize(
+        searchable = normalize(
             " ".join(
                 [
                     product["name"],
@@ -403,14 +425,16 @@ def search_products(
             )
         )
 
-        score = 0
-
-        for term in terms:
-            if term in searchable_text:
-                score += 1
+        score = sum(
+            1
+            for term in terms
+            if term in searchable
+        )
 
         if score > 0:
-            matches.append((score, product))
+            matches.append(
+                (score, product)
+            )
 
     matches.sort(
         key=lambda item: (
@@ -420,7 +444,7 @@ def search_products(
         )
     )
 
-    selected_products = [
+    selected = [
         product
         for _, product in matches[:limit]
     ]
@@ -428,26 +452,55 @@ def search_products(
     return {
         "success": True,
         "query": query,
-        "count": len(selected_products),
+        "count": len(selected),
         "products": [
             public_product(product)
-            for product in selected_products
+            for product in selected
         ],
-        "catalogue": build_catalogue_text(
-            selected_products
-        ),
     }
 
 
 @mcp.tool()
+def list_categories() -> dict[str, Any]:
+    """
+    List all available shopping categories.
+    """
+
+    categories = sorted(
+        {
+            product["category"]
+            for product in PRODUCTS
+        }
+    )
+
+    return {
+        "success": True,
+        "categories": categories,
+        "count": len(categories),
+    }
+
+
+@apps.tool(
+    resource_uri=PRODUCT_UI_URI,
+    visibility=["model", "app"],
+    title="Product Catalogue",
+    description=(
+        "Browse QuickCart products by category "
+        "using the interactive catalogue."
+    ),
+)
 def get_catalogue(
     category: str | None = None,
     limit: int = 20,
 ) -> dict[str, Any]:
     """
-    Browse the product catalogue.
+    Browse all products or a category.
     """
-    limit = max(1, min(limit, 50))
+
+    limit = max(
+        1,
+        min(limit, 50),
+    )
 
     products = PRODUCTS
 
@@ -455,45 +508,57 @@ def get_catalogue(
         products = [
             product
             for product in products
-            if normalize(product["category"])
-            == normalize(category)
+            if (
+                normalize(product["category"])
+                == normalize(category)
+            )
         ]
 
-    selected_products = products[:limit]
+    selected = products[:limit]
 
     return {
         "success": True,
         "category": category,
-        "count": len(selected_products),
+        "count": len(selected),
         "products": [
             public_product(product)
-            for product in selected_products
+            for product in selected
         ],
-        "catalogue": build_catalogue_text(
-            selected_products
-        ),
     }
 
 
-@mcp.tool()
+@apps.tool(
+    resource_uri=PRODUCT_UI_URI,
+    visibility=["model", "app"],
+    title="Product Details",
+    description=(
+        "Display detailed information about "
+        "a selected product."
+    ),
+)
 def get_product_details(
     product_id: str,
 ) -> dict[str, Any]:
     """
-    Get detailed information about a product.
+    Get detailed product information.
     """
+
     product = get_product(product_id)
 
     if product is None:
         return {
             "success": False,
             "error": "Product not found.",
-            "product_id": product_id,
+            "products": [],
+            "count": 0,
         }
 
     return {
         "success": True,
-        "product": public_product(product),
+        "count": 1,
+        "products": [
+            public_product(product)
+        ],
     }
 
 
@@ -508,12 +573,15 @@ def add_to_cart(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
     """
-    Add a product to the user's cart.
+    Add a product to the shopping cart.
     """
+
     if quantity <= 0:
         return {
             "success": False,
-            "error": "Quantity must be greater than zero.",
+            "error": (
+                "Quantity must be greater than zero."
+            ),
         }
 
     product = get_product(product_id)
@@ -524,21 +592,26 @@ def add_to_cart(
             "error": "Product not found.",
         }
 
-    cart = CARTS.setdefault(user_id, {})
+    cart = CARTS.setdefault(
+        user_id,
+        {},
+    )
 
-    current_quantity = cart.get(
+    current = cart.get(
         product_id,
         0,
     )
 
-    new_quantity = current_quantity + quantity
+    new_quantity = (
+        current + quantity
+    )
 
     if new_quantity > product["stock"]:
         return {
             "success": False,
             "error": (
-                f"Only {product['stock']} units of "
-                f"{product['name']} are available."
+                f"Only {product['stock']} units "
+                f"of {product['name']} are available."
             ),
         }
 
@@ -548,7 +621,7 @@ def add_to_cart(
         "success": True,
         "message": (
             f"Added {quantity} × "
-            f"{product['name']} to cart."
+            f"{product['name']} to your cart."
         ),
         "cart": calculate_cart(user_id),
     }
@@ -561,13 +634,16 @@ def update_cart_item(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
     """
-    Set the exact quantity for a cart item.
+    Set an exact product quantity.
     Use quantity=0 to remove the item.
     """
+
     if quantity < 0:
         return {
             "success": False,
-            "error": "Quantity cannot be negative.",
+            "error": (
+                "Quantity cannot be negative."
+            ),
         }
 
     product = get_product(product_id)
@@ -578,18 +654,23 @@ def update_cart_item(
             "error": "Product not found.",
         }
 
-    cart = CARTS.setdefault(user_id, {})
+    cart = CARTS.setdefault(
+        user_id,
+        {},
+    )
 
     if quantity == 0:
-        cart.pop(product_id, None)
-
+        cart.pop(
+            product_id,
+            None,
+        )
     else:
         if quantity > product["stock"]:
             return {
                 "success": False,
                 "error": (
                     f"Only {product['stock']} units "
-                    "are available."
+                    f"of {product['name']} are available."
                 ),
             }
 
@@ -607,9 +688,13 @@ def remove_from_cart(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
     """
-    Remove a product completely from the cart.
+    Remove a product from the cart.
     """
-    cart = CARTS.setdefault(user_id, {})
+
+    cart = CARTS.setdefault(
+        user_id,
+        {},
+    )
 
     removed = cart.pop(
         product_id,
@@ -628,8 +713,9 @@ def get_cart(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
     """
-    Get the user's current cart.
+    Return the current shopping cart.
     """
+
     return {
         "success": True,
         "cart": calculate_cart(user_id),
@@ -641,8 +727,9 @@ def clear_cart(
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
     """
-    Remove every item from the cart.
+    Empty the shopping cart.
     """
+
     CARTS[user_id] = {}
 
     return {
@@ -660,16 +747,19 @@ def clear_cart(
 def checkout(
     confirm: bool,
     user_id: str = "demo-user",
-    address: str = "Demo address, Bengaluru, Karnataka",
+    address: str = (
+        "Demo address, Bengaluru, Karnataka"
+    ),
     payment_method: str = "cash_on_delivery",
 ) -> dict[str, Any]:
     """
-    Place the cart as an order.
+    Create an order from the current cart.
 
-    confirm=true is required to actually create the order.
-    Only use it after the user explicitly asks to order,
-    checkout, buy, or confirm the purchase.
+    confirm=False only previews the checkout.
+
+    confirm=True actually creates the order.
     """
+
     cart = calculate_cart(user_id)
 
     if not cart["items"]:
@@ -683,13 +773,16 @@ def checkout(
             "success": False,
             "requires_confirmation": True,
             "message": (
-                "Checkout was not executed. "
-                "Explicit purchase confirmation is required."
+                "Checkout preview only. "
+                "No order has been created."
             ),
             "cart": cart,
         }
 
-    # Verify stock one final time.
+    # --------------------------------------------------------
+    # Final stock check
+    # --------------------------------------------------------
+
     for item in cart["items"]:
 
         product = get_product(
@@ -700,12 +793,16 @@ def checkout(
             return {
                 "success": False,
                 "error": (
-                    f"Product {item['product_id']} "
-                    "is no longer available."
+                    f"Product "
+                    f"{item['product_id']} "
+                    "is unavailable."
                 ),
             }
 
-        if item["quantity"] > product["stock"]:
+        if (
+            item["quantity"]
+            > product["stock"]
+        ):
             return {
                 "success": False,
                 "error": (
@@ -733,21 +830,26 @@ def checkout(
 
     ORDERS[order_id] = order
 
-    # Reduce demo stock.
+    # Reduce demo inventory
     for item in cart["items"]:
+
         product = get_product(
             item["product_id"]
         )
 
         if product is not None:
-            product["stock"] -= item["quantity"]
+            product["stock"] -= (
+                item["quantity"]
+            )
 
-    # Clear cart.
+    # Empty cart
     CARTS[user_id] = {}
 
     return {
         "success": True,
-        "message": "Order placed successfully.",
+        "message": (
+            "Order placed successfully."
+        ),
         "order": order,
     }
 
@@ -757,9 +859,12 @@ def get_order(
     order_id: str,
 ) -> dict[str, Any]:
     """
-    Get an order by order ID.
+    Get the status/details of an order.
     """
-    order = ORDERS.get(order_id)
+
+    order = ORDERS.get(
+        order_id
+    )
 
     if order is None:
         return {
@@ -780,6 +885,7 @@ def list_orders(
     """
     List all orders for a user.
     """
+
     orders = [
         order
         for order in ORDERS.values()
@@ -802,8 +908,7 @@ async def lifespan(
     _app: FastAPI,
 ):
     """
-    Start the MCP session manager when MCP is mounted
-    inside the FastAPI application.
+    Start the MCP session manager for FastAPI.
     """
     async with mcp.session_manager.run():
         yield
@@ -812,7 +917,9 @@ async def lifespan(
 app = FastAPI(
     title=APP_NAME,
     version=APP_VERSION,
-    description="Agentic commerce MCP server.",
+    description=(
+        "QuickCart Agentic Commerce MCP Server"
+    ),
     lifespan=lifespan,
 )
 
@@ -861,9 +968,8 @@ async def root() -> dict[str, Any]:
         "name": APP_NAME,
         "version": APP_VERSION,
         "status": "online",
-        "mcp_endpoint": (
-            f"https://{PUBLIC_HOST}/mcp"
-        ),
+        "mcp_endpoint": MCP_URL,
+        "ui_resource": PRODUCT_UI_URI,
     }
 
 
@@ -875,6 +981,7 @@ async def health() -> dict[str, Any]:
         "version": APP_VERSION,
         "products": len(PRODUCTS),
         "orders": len(ORDERS),
+        "ui": "enabled",
     }
 
 
@@ -909,16 +1016,6 @@ transport_security = (
 # ============================================================
 # MCP STREAMABLE HTTP
 # ============================================================
-#
-# This creates an ASGI app containing:
-#
-# /mcp
-#
-# We mount it directly below.
-#
-# json_response=True is a transport option,
-# NOT an MCPServer constructor option.
-# ============================================================
 
 mcp_http_app = mcp.streamable_http_app(
     streamable_http_path="/",
@@ -928,7 +1025,7 @@ mcp_http_app = mcp.streamable_http_app(
 
 
 # ============================================================
-# MOUNT MCP UNDER /mcp
+# MOUNT MCP
 # ============================================================
 
 app.mount(
@@ -938,7 +1035,7 @@ app.mount(
 
 
 # ============================================================
-# LOCAL EXECUTION
+# LOCAL DEVELOPMENT
 # ============================================================
 
 if __name__ == "__main__":
