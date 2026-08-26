@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 mcp
 httpx
+pymongo>=4.13
+tzdata
