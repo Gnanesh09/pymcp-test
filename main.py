@@ -2399,8 +2399,8 @@ async def lifespan(
         "Autonomous payment mode:",
         AUTONOMOUS_PAYMENT_MODE,
     )
-
-    yield
+    async with mcp_session_manager.run():
+        yield
 
     if mongo_client:
         await mongo_client.close()
@@ -2452,6 +2452,7 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
+
     return {
         "name": APP_NAME,
         "version": APP_VERSION,
@@ -2470,14 +2471,19 @@ async def health():
     mongo_ok = False
 
     if db is not None:
+
         try:
+
             result = await db.command(
                 "ping"
             )
+
             mongo_ok = (
                 int(result["ok"]) == 1
             )
+
         except Exception:
+
             mongo_ok = False
 
     return {
@@ -2503,6 +2509,7 @@ async def health():
 
 @app.get("/agent")
 async def agent_http():
+
     agent = await get_agent(
         DEFAULT_AGENT_ID
     )
@@ -2535,7 +2542,13 @@ async def audit_http(
         "timestamp",
         -1,
     ).limit(
-        max(1, min(limit, 100))
+        max(
+            1,
+            min(
+                limit,
+                100,
+            ),
+        )
     ).to_list(
         length=None
     )
@@ -2555,7 +2568,6 @@ async def audit_http(
 # This lets you test the exact agent workflow from a browser
 # before asking ChatGPT to call it.
 # ============================================================
-
 @app.post("/test/autonomous-purchase")
 async def test_autonomous_purchase(
     payload: dict[str, Any],
@@ -2588,23 +2600,21 @@ async def test_autonomous_purchase(
 # MCP TRANSPORT SECURITY
 # ============================================================
 
-transport_security = (
-    TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=[
-            PUBLIC_HOST,
-            f"{PUBLIC_HOST}:443",
-        ],
-        allowed_origins=[
-            "https://chatgpt.com",
-            "https://chat.openai.com",
-        ],
-    )
+transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[
+        PUBLIC_HOST,
+        f"{PUBLIC_HOST}:443",
+    ],
+    allowed_origins=[
+        "https://chatgpt.com",
+        "https://chat.openai.com",
+    ],
 )
 
 
 # ============================================================
-# MCP STREAMABLE HTTP
+# CREATE MCP HTTP APP FIRST
 # ============================================================
 
 mcp_http_app = mcp.streamable_http_app(
@@ -2613,6 +2623,395 @@ mcp_http_app = mcp.streamable_http_app(
     transport_security=transport_security,
 )
 
+# IMPORTANT:
+# Capture the same session manager used by the MCP HTTP app
+# BEFORE the FastAPI application is created.
+mcp_session_manager = mcp.session_manager
+
+
+# ============================================================
+# FASTAPI LIFESPAN
+# ============================================================
+
+@contextlib.asynccontextmanager
+async def lifespan(
+    app: FastAPI,
+):
+    global mongo_client
+    global db
+    global agents_collection
+    global policies_collection
+    global products_collection
+    global carts_collection
+    global orders_collection
+    global payments_collection
+    global spend_collection
+    global runs_collection
+    global audit_collection
+
+    # --------------------------------------------------------
+    # MongoDB
+    # --------------------------------------------------------
+
+    if not MONGODB_URI:
+        raise RuntimeError(
+            "MONGODB_URI is not configured."
+        )
+
+    mongo_client = AsyncMongoClient(
+        MONGODB_URI
+    )
+
+    db = mongo_client[
+        MONGODB_DB
+    ]
+
+    ping = await db.command(
+        "ping"
+    )
+
+    if int(ping["ok"]) != 1:
+        raise RuntimeError(
+            "MongoDB ping failed."
+        )
+
+    agents_collection = db[
+        "agents"
+    ]
+
+    policies_collection = db[
+        "agent_policies"
+    ]
+
+    products_collection = db[
+        "products"
+    ]
+
+    carts_collection = db[
+        "carts"
+    ]
+
+    orders_collection = db[
+        "orders"
+    ]
+
+    payments_collection = db[
+        "payments"
+    ]
+
+    spend_collection = db[
+        "agent_spend"
+    ]
+
+    runs_collection = db[
+        "agent_runs"
+    ]
+
+    audit_collection = db[
+        "audit_events"
+    ]
+
+    # --------------------------------------------------------
+    # Indexes
+    # --------------------------------------------------------
+
+    await products_collection.create_index(
+        [
+            ("merchant_id", 1),
+            ("category", 1),
+        ]
+    )
+
+    await products_collection.create_index(
+        [
+            ("name", "text"),
+            ("brand", "text"),
+            ("description", "text"),
+        ]
+    )
+
+    await orders_collection.create_index(
+        [
+            ("user_id", 1),
+            ("created_at", -1),
+        ]
+    )
+
+    await audit_collection.create_index(
+        [
+            ("agent_id", 1),
+            ("timestamp", -1),
+        ]
+    )
+
+    await spend_collection.create_index(
+        [
+            ("agent_id", 1),
+            ("date", 1),
+        ],
+        unique=True,
+    )
+
+    # --------------------------------------------------------
+    # Seed products
+    # --------------------------------------------------------
+
+    for product in DEFAULT_PRODUCTS:
+        await products_collection.update_one(
+            {
+                "_id": product["_id"],
+            },
+            {
+                "$setOnInsert": product,
+            },
+            upsert=True,
+        )
+
+    # --------------------------------------------------------
+    # Create demo agent
+    # --------------------------------------------------------
+
+    await ensure_demo_agent()
+
+    app.state.mongo_client = mongo_client
+    app.state.db = db
+
+    print(
+        "MongoDB connected:",
+        MONGODB_DB,
+    )
+
+    print(
+        "Agent:",
+        DEFAULT_AGENT_ID,
+    )
+
+    print(
+        "Daily limit: ₹50,000"
+    )
+
+    print(
+        "Autonomous payment mode:",
+        AUTONOMOUS_PAYMENT_MODE,
+    )
+
+    # --------------------------------------------------------
+    # MCP SESSION MANAGER
+    # --------------------------------------------------------
+
+    print(
+        "Starting MCP session manager..."
+    )
+
+    try:
+
+        async with mcp_session_manager.run():
+
+            print(
+                "MCP session manager started."
+            )
+
+            yield
+
+    finally:
+
+        print(
+            "Stopping MCP session manager..."
+        )
+
+        if mongo_client:
+            await mongo_client.close()
+
+        print(
+            "MongoDB connection closed."
+        )
+
+
+# ============================================================
+# FASTAPI APPLICATION
+# ============================================================
+
+app = FastAPI(
+    title=APP_NAME,
+    version=APP_VERSION,
+    description=(
+        "MongoDB-backed autonomous commerce "
+        "agent with bounded spending."
+    ),
+    lifespan=lifespan,
+)
+
+
+# ============================================================
+# CORS
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://chatgpt.com",
+        "https://chat.openai.com",
+    ],
+    allow_credentials=True,
+    allow_methods=[
+        "GET",
+        "POST",
+        "OPTIONS",
+    ],
+    allow_headers=[
+        "*",
+    ],
+    expose_headers=[
+        "Mcp-Session-Id",
+    ],
+)
+
+
+# ============================================================
+# NORMAL ROUTES
+# ============================================================
+
+@app.get("/")
+async def root():
+
+    return {
+        "name": APP_NAME,
+        "version": APP_VERSION,
+        "status": "online",
+        "mcp": MCP_URL,
+        "agent": DEFAULT_AGENT_ID,
+        "autonomous_payment_mode": (
+            AUTONOMOUS_PAYMENT_MODE
+        ),
+    }
+
+
+@app.get("/health")
+async def health():
+
+    mongo_ok = False
+
+    if db is not None:
+        try:
+            result = await db.command(
+                "ping"
+            )
+
+            mongo_ok = (
+                int(result["ok"]) == 1
+            )
+
+        except Exception:
+            mongo_ok = False
+
+    return {
+        "status": "ok",
+        "service": APP_NAME,
+        "version": APP_VERSION,
+        "mongodb": mongo_ok,
+        "razorpay_test_keys": (
+            RAZORPAY_KEY_ID.startswith(
+                "rzp_test_"
+            )
+            and bool(
+                RAZORPAY_KEY_SECRET
+            )
+        ),
+        "autonomous_payment_mode": (
+            AUTONOMOUS_PAYMENT_MODE
+        ),
+        "agent": DEFAULT_AGENT_ID,
+        "daily_limit": 50000,
+    }
+
+
+@app.get("/agent")
+async def agent_http():
+
+    agent = await get_agent(
+        DEFAULT_AGENT_ID
+    )
+
+    policy = await get_policy(
+        DEFAULT_AGENT_ID
+    )
+
+    return {
+        "agent": json_safe(agent),
+        "policy": json_safe(policy),
+        "spending": {
+            "today": await get_daily_spend(
+                DEFAULT_AGENT_ID
+            ),
+        },
+    }
+
+
+@app.get("/agent/audit")
+async def audit_http(
+    limit: int = 50,
+):
+
+    events = await audit_collection.find(
+        {
+            "agent_id": DEFAULT_AGENT_ID,
+        }
+    ).sort(
+        "timestamp",
+        -1,
+    ).limit(
+        max(
+            1,
+            min(limit, 100),
+        )
+    ).to_list(
+        length=None
+    )
+
+    return {
+        "count": len(events),
+        "events": [
+            json_safe(event)
+            for event in events
+        ],
+    }
+
+
+# ============================================================
+# TEST AUTONOMOUS PURCHASE
+# ============================================================
+
+@app.post("/test/autonomous-purchase")
+async def test_autonomous_purchase(
+    payload: dict[str, Any],
+):
+
+    items = payload.get(
+        "items",
+        [
+            {
+                "product_id": "p005",
+                "quantity": 20,
+            }
+        ],
+    )
+
+    intent = payload.get(
+        "intent",
+        "Test autonomous grocery purchase",
+    )
+
+    return await execute_autonomous_purchase(
+        agent_id=DEFAULT_AGENT_ID,
+        user_id=DEFAULT_USER_ID,
+        items=items,
+        intent=intent,
+    )
+
+
+# ============================================================
+# MOUNT MCP
+# ============================================================
 
 app.mount(
     "/mcp",
@@ -2621,7 +3020,7 @@ app.mount(
 
 
 # ============================================================
-# LOCAL ENTRYPOINT
+# LOCAL START
 # ============================================================
 
 if __name__ == "__main__":
