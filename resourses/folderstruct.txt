@@ -1,0 +1,17 @@
+backend/
+├── app/
+│   ├── config.py
+│   ├── db.py
+│   ├── models.py
+│   ├── schemas.py
+│   ├── security.py
+│   ├── services.py
+│   ├── payments.py
+│   ├── mcp.py
+│   ├── audit.py
+│   ├── policies.py
+│   ├── routes.py
+│   └── main.py
+│
+├── requirements.txt
+└── .env.example
