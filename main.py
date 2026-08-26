@@ -6,14 +6,16 @@ import hmac
 import os
 import re
 import uuid
-from html import escape
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+from pymongo import AsyncMongoClient, ReturnDocument
 
 from mcp.server import MCPServer
 from mcp.server.apps import Apps
@@ -24,33 +26,121 @@ from mcp.server.transport_security import TransportSecuritySettings
 # CONFIG
 # ============================================================
 
-APP_NAME = "QuickCart MCP"
-APP_VERSION = "3.0.0"
+APP_NAME = "QuickCart Agentic Commerce"
+APP_VERSION = "4.0.0"
 
-PUBLIC_HOST = "pymcp-test.onrender.com"
-PUBLIC_BASE_URL = f"https://{PUBLIC_HOST}"
-MCP_URL = f"{PUBLIC_BASE_URL}/mcp"
+PUBLIC_HOST = os.getenv(
+    "PUBLIC_HOST",
+    "pymcp-test.onrender.com",
+).strip()
 
-PRODUCT_UI_URI = "ui://quickcart/product-catalogue.html"
+PUBLIC_BASE_URL = (
+    f"https://{PUBLIC_HOST}"
+)
+
+MCP_URL = (
+    f"{PUBLIC_BASE_URL}/mcp"
+)
+
+TIMEZONE = ZoneInfo("Asia/Kolkata")
+
+# MongoDB
+MONGODB_URI = os.getenv(
+    "MONGODB_URI",
+    "",
+).strip()
+
+MONGODB_DB = os.getenv(
+    "MONGODB_DB",
+    "quickcart",
+).strip()
+
+# Razorpay standard Test Mode
+RAZORPAY_KEY_ID = os.getenv(
+    "RAZORPAY_KEY_ID",
+    "",
+).strip()
+
+RAZORPAY_KEY_SECRET = os.getenv(
+    "RAZORPAY_KEY_SECRET",
+    "",
+).strip()
+
+RAZORPAY_API_BASE = (
+    "https://api.razorpay.com/v1"
+)
+
+# IMPORTANT:
+#
+# SIMULATED:
+#     Fully autonomous demo rail.
+#     No human interaction.
+#
+# RAZORPAY_CHECKOUT:
+#     Normal Razorpay Checkout.
+#     Requires a human.
+#
+# RAZORPAY_RESERVE_PAY:
+#     Intended production autonomous rail,
+#     but must only be enabled after Razorpay
+#     activates Reserve Pay for your account.
+#
+AUTONOMOUS_PAYMENT_MODE = os.getenv(
+    "AUTONOMOUS_PAYMENT_MODE",
+    "SIMULATED",
+).strip().upper()
+
+DEFAULT_AGENT_ID = (
+    "agent_demo_grocery"
+)
+
+DEFAULT_USER_ID = (
+    "demo-user"
+)
+
+DEFAULT_MERCHANT_ID = (
+    "quickcart"
+)
+
+PRODUCT_UI_URI = (
+    "ui://quickcart/product-catalogue.html"
+)
 
 BASE_DIR = Path(__file__).resolve().parent
-PRODUCT_UI_FILE = BASE_DIR / "product_catalogue.html"
 
-# Razorpay
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
-# RAZORPAY_KEY_ID = "rzp_test_SIjuTFfoEyDAWa"
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
-# RAZORPAY_KEY_SECRET = "iOSIi09qMHX2pp7rqTkhMHPL"
-RAZORPAY_API_BASE = "https://api.razorpay.com/v1"
+PRODUCT_UI_FILE = (
+    BASE_DIR / "product_catalogue.html"
+)
 
 
 # ============================================================
-# DEMO PRODUCT DATABASE
+# MONGODB
 # ============================================================
 
-PRODUCTS: list[dict[str, Any]] = [
+mongo_client: AsyncMongoClient | None = None
+db = None
+
+agents_collection = None
+policies_collection = None
+products_collection = None
+carts_collection = None
+orders_collection = None
+payments_collection = None
+spend_collection = None
+runs_collection = None
+audit_collection = None
+
+
+# ============================================================
+# DEFAULT PRODUCTS
+#
+# Seeded into MongoDB once.
+# ============================================================
+
+DEFAULT_PRODUCTS: list[dict[str, Any]] = [
     {
-        "id": "p001",
+        "_id": "p001",
+        "merchant_id": DEFAULT_MERCHANT_ID,
         "name": "Aashirvaad Atta 5kg",
         "brand": "Aashirvaad",
         "category": "grocery",
@@ -62,10 +152,17 @@ PRODUCTS: list[dict[str, Any]] = [
         "unit": "5 kg",
         "description": "Premium whole wheat flour.",
         "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQi8qXYSl439pmbK5h5T8GcGYJtQtRkxrnKDYbCRYy7aQ&s=10",
-        "tags": ["atta", "flour", "wheat", "grocery"],
+        "tags": [
+            "atta",
+            "flour",
+            "wheat",
+            "grocery",
+        ],
+        "active": True,
     },
     {
-        "id": "p002",
+        "_id": "p002",
+        "merchant_id": DEFAULT_MERCHANT_ID,
         "name": "Tata Salt 1kg",
         "brand": "Tata",
         "category": "grocery",
@@ -77,10 +174,15 @@ PRODUCTS: list[dict[str, Any]] = [
         "unit": "1 kg",
         "description": "Iodised vacuum evaporated salt.",
         "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRa7lkQncRgI3d52YGb2MGmsofKoauTJoLvrJaBUWppVg&s=10",
-        "tags": ["salt", "grocery"],
+        "tags": [
+            "salt",
+            "grocery",
+        ],
+        "active": True,
     },
     {
-        "id": "p003",
+        "_id": "p003",
+        "merchant_id": DEFAULT_MERCHANT_ID,
         "name": "Amul Taaza Milk 1L",
         "brand": "Amul",
         "category": "dairy",
@@ -92,10 +194,16 @@ PRODUCTS: list[dict[str, Any]] = [
         "unit": "1 litre",
         "description": "Fresh toned milk.",
         "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSGaiqZ-X_6OZLVY0cbRoHSLv-u_YsbqtBAm_C6RggvLA&s=10",
-        "tags": ["milk", "dairy", "breakfast"],
+        "tags": [
+            "milk",
+            "dairy",
+            "breakfast",
+        ],
+        "active": True,
     },
     {
-        "id": "p004",
+        "_id": "p004",
+        "merchant_id": DEFAULT_MERCHANT_ID,
         "name": "Amul Butter 500g",
         "brand": "Amul",
         "category": "dairy",
@@ -107,10 +215,15 @@ PRODUCTS: list[dict[str, Any]] = [
         "unit": "500 g",
         "description": "Pasteurised table butter.",
         "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTtZt3ju1kB5B4tsHu3KrQ-PRVe5xcSBXBf9NZbEPlF_A&s",
-        "tags": ["butter", "dairy"],
+        "tags": [
+            "butter",
+            "dairy",
+        ],
+        "active": True,
     },
     {
-        "id": "p005",
+        "_id": "p005",
+        "merchant_id": DEFAULT_MERCHANT_ID,
         "name": "Maggi 2-Minute Noodles",
         "brand": "Nestle",
         "category": "snacks",
@@ -122,10 +235,17 @@ PRODUCTS: list[dict[str, Any]] = [
         "unit": "70 g",
         "description": "Instant noodles.",
         "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT1YIdP9S9iKozp1c7D3XMZjK4riYeeLQD1kac9QMpV5Q&s=10",
-        "tags": ["maggi", "noodles", "instant", "snacks"],
+        "tags": [
+            "maggi",
+            "noodles",
+            "instant",
+            "snacks",
+        ],
+        "active": True,
     },
     {
-        "id": "p006",
+        "_id": "p006",
+        "merchant_id": DEFAULT_MERCHANT_ID,
         "name": "Lay's Magic Masala",
         "brand": "Lay's",
         "category": "snacks",
@@ -137,10 +257,15 @@ PRODUCTS: list[dict[str, Any]] = [
         "unit": "50 g",
         "description": "Spicy potato chips.",
         "image": "https://banerjeesupermarket.com/wp-content/uploads/2026/04/81rQQr3BvWL._SL1500_-600x723.jpg",
-        "tags": ["chips", "snacks"],
+        "tags": [
+            "chips",
+            "snacks",
+        ],
+        "active": True,
     },
     {
-        "id": "p007",
+        "_id": "p007",
+        "merchant_id": DEFAULT_MERCHANT_ID,
         "name": "Coca-Cola 750ml",
         "brand": "Coca-Cola",
         "category": "beverages",
@@ -152,10 +277,17 @@ PRODUCTS: list[dict[str, Any]] = [
         "unit": "750 ml",
         "description": "Carbonated soft drink.",
         "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTmgriAj9WTl8bqGCJRG7uQd5F19pEuYH4mn_1ryHIYKg&s=10",
-        "tags": ["coke", "drink", "beverage", "soft drink"],
+        "tags": [
+            "coke",
+            "drink",
+            "beverage",
+            "soft drink",
+        ],
+        "active": True,
     },
     {
-        "id": "p008",
+        "_id": "p008",
+        "merchant_id": DEFAULT_MERCHANT_ID,
         "name": "Red Bull Energy Drink",
         "brand": "Red Bull",
         "category": "beverages",
@@ -167,10 +299,16 @@ PRODUCTS: list[dict[str, Any]] = [
         "unit": "250 ml",
         "description": "Energy drink.",
         "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTEHbTunV3BTGk2CFf6WaoWWYYPa1QyQQz8tSYKrmlXCA&s=10",
-        "tags": ["energy", "drink", "beverage"],
+        "tags": [
+            "energy",
+            "drink",
+            "beverage",
+        ],
+        "active": True,
     },
     {
-        "id": "p009",
+        "_id": "p009",
+        "merchant_id": DEFAULT_MERCHANT_ID,
         "name": "Surf Excel Matic 2kg",
         "brand": "Surf Excel",
         "category": "household",
@@ -182,10 +320,16 @@ PRODUCTS: list[dict[str, Any]] = [
         "unit": "2 kg",
         "description": "Detergent powder for washing machines.",
         "image": "https://encrypted-tbn1.gstatic.com/shopping?q=tbn:ANd9GcS1xQGzDp2BZq8vjTvS7Wrp3vrWNSOUbNsEozv_8vS3ZqSv9XnD40lVVttATUuNMGT1SCy6FeRGQLPdvOtO5qs9dCyieobHF60qcedA9hNwG-7xpf2gvD0Wqz4567YIsm7wq2xlP8o&usqp=CAc",
-        "tags": ["detergent", "washing", "household"],
+        "tags": [
+            "detergent",
+            "washing",
+            "household",
+        ],
+        "active": True,
     },
     {
-        "id": "p010",
+        "_id": "p010",
+        "merchant_id": DEFAULT_MERCHANT_ID,
         "name": "Colgate MaxFresh",
         "brand": "Colgate",
         "category": "personal-care",
@@ -197,45 +341,64 @@ PRODUCTS: list[dict[str, Any]] = [
         "unit": "150 g",
         "description": "Fresh breath toothpaste.",
         "image": "https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQcGOP1-iLFVa741jL0HGPQJ0gsGmOsrFrXmiEAL4dQ97K04aljr25r9RvaSFCgk76RD7ep9UwAxO3nZdpA2Ny1c6u_p2igD8Yf7oDjyr59NbmfcYcyJKrSpQ",
-        "tags": ["toothpaste", "personal care"],
+        "tags": [
+            "toothpaste",
+            "personal care",
+        ],
+        "active": True,
     },
 ]
 
 
 # ============================================================
-# DEMO STATE
+# UTILITY FUNCTIONS
 # ============================================================
 
-# Demo only.
-# Replace with PostgreSQL/MongoDB for production.
-CARTS: dict[str, dict[str, int]] = {}
-ORDERS: dict[str, dict[str, Any]] = {}
-
-# Razorpay payment attempts.
-PAYMENTS: dict[str, dict[str, Any]] = {}
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+def today_key() -> str:
+    return datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+
 
 def normalize(text: str) -> str:
     text = text.lower().strip()
-    text = re.sub(r"[^a-z0-9\s-]", " ", text)
-    return re.sub(r"\s+", " ", text)
+    text = re.sub(
+        r"[^a-z0-9\s-]",
+        " ",
+        text,
+    )
+    return re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
 
 
-def get_product(product_id: str) -> dict[str, Any] | None:
-    for product in PRODUCTS:
-        if product["id"] == product_id:
-            return product
+def json_safe(document: Any) -> Any:
+    if isinstance(document, dict):
+        return {
+            str(k): json_safe(v)
+            for k, v in document.items()
+            if k != "_id"
+        }
 
-    return None
+    if isinstance(document, list):
+        return [
+            json_safe(item)
+            for item in document
+        ]
+
+    if isinstance(document, datetime):
+        return document.isoformat()
+
+    return document
 
 
-def public_product(product: dict[str, Any]) -> dict[str, Any]:
+def product_public(product: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": product["id"],
+        "id": product["_id"],
         "name": product["name"],
         "brand": product["brand"],
         "category": product["category"],
@@ -250,50 +413,1159 @@ def public_product(product: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def calculate_cart(user_id: str) -> dict[str, Any]:
-    user_cart = CARTS.get(user_id, {})
+def build_cart(
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
 
-    items: list[dict[str, Any]] = []
-    subtotal = 0
+    subtotal = sum(
+        item["unit_price"] * item["quantity"]
+        for item in items
+    )
 
-    for product_id, quantity in user_cart.items():
-        product = get_product(product_id)
+    delivery_fee = (
+        39
+        if 0 < subtotal < 499
+        else 0
+    )
 
-        if product is None:
-            continue
+    return {
+        "items": items,
+        "item_count": sum(
+            item["quantity"]
+            for item in items
+        ),
+        "subtotal": subtotal,
+        "delivery_fee": delivery_fee,
+        "total": subtotal + delivery_fee,
+        "currency": "INR",
+    }
 
-        line_total = product["price"] * quantity
-        subtotal += line_total
 
-        items.append(
+def payment_mode_description() -> str:
+    if AUTONOMOUS_PAYMENT_MODE == "SIMULATED":
+        return (
+            "Autonomous test rail. "
+            "No real money moves."
+        )
+
+    if AUTONOMOUS_PAYMENT_MODE == "RAZORPAY_RESERVE_PAY":
+        return (
+            "Razorpay UPI Reserve Pay adapter. "
+            "Requires account activation."
+        )
+
+    return (
+        "Standard Razorpay Checkout. "
+        "Human interaction required."
+    )
+
+
+# ============================================================
+# AUDIT
+# ============================================================
+
+async def audit(
+    event: str,
+    *,
+    agent_id: str | None = None,
+    user_id: str | None = None,
+    amount: int | None = None,
+    status: str | None = None,
+    reason: Any = None,
+    data: dict[str, Any] | None = None,
+) -> str:
+
+    event_id = (
+        f"evt_{uuid.uuid4().hex[:16]}"
+    )
+
+    await audit_collection.insert_one(
+        {
+            "_id": event_id,
+            "event": event,
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "amount": amount,
+            "status": status,
+            "reason": reason,
+            "data": data or {},
+            "timestamp": now_utc(),
+            "date": today_key(),
+        }
+    )
+
+    return event_id
+
+
+# ============================================================
+# AGENT POLICY
+# ============================================================
+
+async def ensure_demo_agent() -> None:
+
+    existing = await agents_collection.find_one(
+        {
+            "_id": DEFAULT_AGENT_ID,
+        }
+    )
+
+    if existing:
+        return
+
+    agent = {
+        "_id": DEFAULT_AGENT_ID,
+        "user_id": DEFAULT_USER_ID,
+        "merchant_id": DEFAULT_MERCHANT_ID,
+        "name": "Grocery Autopilot",
+        "status": "active",
+        "created_at": now_utc(),
+    }
+
+    policy = {
+        "_id": DEFAULT_AGENT_ID,
+        "agent_id": DEFAULT_AGENT_ID,
+
+        # THE USER'S REQUESTED DAILY LIMIT
+        "daily_limit": 50000,
+
+        # Harder per-transaction boundary.
+        "per_transaction_limit": 10000,
+
+        "allowed_categories": [
+            "grocery",
+            "snacks",
+            "beverages",
+            "dairy",
+        ],
+
+        "allowed_merchants": [
+            DEFAULT_MERCHANT_ID,
+        ],
+
+        "auto_purchase": True,
+
+        # Test rail.
+        "payment_mode": (
+            AUTONOMOUS_PAYMENT_MODE
+        ),
+
+        "created_at": now_utc(),
+        "updated_at": now_utc(),
+    }
+
+    await agents_collection.insert_one(
+        agent
+    )
+
+    await policies_collection.insert_one(
+        policy
+    )
+
+    await audit(
+        "AGENT_CREATED",
+        agent_id=DEFAULT_AGENT_ID,
+        user_id=DEFAULT_USER_ID,
+        status="SUCCESS",
+        reason="Initial autonomous grocery agent.",
+        data={
+            "daily_limit": 50000,
+            "per_transaction_limit": 10000,
+        },
+    )
+
+
+async def get_agent(
+    agent_id: str,
+) -> dict[str, Any] | None:
+
+    return await agents_collection.find_one(
+        {"_id": agent_id}
+    )
+
+
+async def get_policy(
+    agent_id: str,
+) -> dict[str, Any] | None:
+
+    return await policies_collection.find_one(
+        {"_id": agent_id}
+    )
+
+
+# ============================================================
+# DAILY SPEND
+# ============================================================
+
+async def get_daily_spend(
+    agent_id: str,
+) -> int:
+
+    document = (
+        await spend_collection.find_one(
             {
-                "product_id": product["id"],
+                "_id": (
+                    f"{agent_id}:{today_key()}"
+                )
+            }
+        )
+    )
+
+    if not document:
+        return 0
+
+    return int(
+        document.get("amount", 0)
+    )
+
+
+async def reserve_daily_spend(
+    *,
+    agent_id: str,
+    amount: int,
+    daily_limit: int,
+) -> dict[str, Any] | None:
+
+    spend_id = (
+        f"{agent_id}:{today_key()}"
+    )
+
+    # Make sure today's record exists.
+    await spend_collection.update_one(
+        {"_id": spend_id},
+        {
+            "$setOnInsert": {
+                "agent_id": agent_id,
+                "date": today_key(),
+                "amount": 0,
+                "transaction_count": 0,
+                "created_at": now_utc(),
+            }
+        },
+        upsert=True,
+    )
+
+    # Atomic guard against concurrent overspending.
+    result = await spend_collection.find_one_and_update(
+        {
+            "_id": spend_id,
+            "amount": {
+                "$lte": daily_limit - amount
+            },
+        },
+        {
+            "$inc": {
+                "amount": amount,
+                "transaction_count": 1,
+            },
+            "$set": {
+                "updated_at": now_utc(),
+            },
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+    if result is None:
+        return None
+
+    return result
+
+
+async def release_daily_spend(
+    *,
+    agent_id: str,
+    amount: int,
+) -> None:
+
+    spend_id = (
+        f"{agent_id}:{today_key()}"
+    )
+
+    await spend_collection.update_one(
+        {"_id": spend_id},
+        {
+            "$inc": {
+                "amount": -amount,
+                "transaction_count": -1,
+            }
+        },
+    )
+
+
+# ============================================================
+# POLICY ENGINE
+# ============================================================
+
+async def evaluate_purchase(
+    *,
+    agent_id: str,
+    user_id: str,
+    merchant_id: str,
+    amount: int,
+    categories: list[str],
+) -> dict[str, Any]:
+
+    policy = await get_policy(
+        agent_id
+    )
+
+    if not policy:
+        return {
+            "decision": "BLOCK",
+            "reason": "Agent policy not found.",
+        }
+
+    if not policy.get(
+        "auto_purchase",
+        False,
+    ):
+        return {
+            "decision": "BLOCK",
+            "reason": (
+                "Autonomous purchasing is disabled."
+            ),
+        }
+
+    if merchant_id not in policy.get(
+        "allowed_merchants",
+        [],
+    ):
+        return {
+            "decision": "BLOCK",
+            "reason": (
+                "Merchant is not allowed by agent policy."
+            ),
+        }
+
+    allowed_categories = set(
+        policy.get(
+            "allowed_categories",
+            [],
+        )
+    )
+
+    disallowed = [
+        category
+        for category in categories
+        if category not in allowed_categories
+    ]
+
+    if disallowed:
+        return {
+            "decision": "BLOCK",
+            "reason": (
+                "One or more categories are blocked.",
+            ),
+            "disallowed_categories": disallowed,
+        }
+
+    per_transaction_limit = int(
+        policy["per_transaction_limit"]
+    )
+
+    daily_limit = int(
+        policy["daily_limit"]
+    )
+
+    if amount <= 0:
+        return {
+            "decision": "BLOCK",
+            "reason": "Purchase amount must be positive.",
+        }
+
+    if amount > per_transaction_limit:
+        return {
+            "decision": "BLOCK",
+            "reason": (
+                f"₹{amount} exceeds the "
+                f"₹{per_transaction_limit} "
+                "per-transaction limit."
+            ),
+            "limits": {
+                "transaction": per_transaction_limit,
+                "daily": daily_limit,
+            },
+        }
+
+    daily_spend = await get_daily_spend(
+        agent_id
+    )
+
+    remaining = max(
+        0,
+        daily_limit - daily_spend,
+    )
+
+    if amount > remaining:
+        return {
+            "decision": "BLOCK",
+            "reason": (
+                f"Daily limit exceeded. "
+                f"Remaining today: ₹{remaining}."
+            ),
+            "limits": {
+                "daily": daily_limit,
+                "spent_today": daily_spend,
+                "remaining": remaining,
+            },
+        }
+
+    return {
+        "decision": "ALLOW",
+        "reason": [
+            "Autonomous purchase is enabled.",
+            "Merchant is allowed.",
+            "All categories are allowed.",
+            (
+                "Transaction is below "
+                "per-transaction limit."
+            ),
+            (
+                "Transaction is within "
+                "today's remaining budget."
+            ),
+        ],
+        "limits": {
+            "daily": daily_limit,
+            "spent_today": daily_spend,
+            "remaining_before": remaining,
+            "remaining_after": (
+                remaining - amount
+            ),
+            "per_transaction": (
+                per_transaction_limit
+            ),
+        },
+    }
+
+
+# ============================================================
+# PRODUCT / BASKET
+# ============================================================
+
+async def load_products(
+    product_ids: list[str],
+) -> list[dict[str, Any]]:
+
+    documents = await products_collection.find(
+        {
+            "_id": {
+                "$in": product_ids
+            },
+            "active": True,
+        }
+    ).to_list(length=None)
+
+    by_id = {
+        product["_id"]: product
+        for product in documents
+    }
+
+    return [
+        by_id[product_id]
+        for product_id in product_ids
+        if product_id in by_id
+    ]
+
+
+async def build_basket(
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+
+    normalized_items = []
+
+    for item in items:
+
+        product_id = str(
+            item["product_id"]
+        )
+
+        quantity = int(
+            item.get("quantity", 1)
+        )
+
+        if quantity <= 0:
+            raise ValueError(
+                "Quantity must be greater than zero."
+            )
+
+        product = await products_collection.find_one(
+            {
+                "_id": product_id,
+                "active": True,
+            }
+        )
+
+        if not product:
+            raise ValueError(
+                f"Product {product_id} not found."
+            )
+
+        if product["stock"] < quantity:
+            raise ValueError(
+                f"Only {product['stock']} units "
+                f"of {product['name']} are available."
+            )
+
+        normalized_items.append(
+            {
+                "product_id": product["_id"],
                 "name": product["name"],
+                "category": product["category"],
                 "quantity": quantity,
-                "unit_price": product["price"],
-                "line_total": line_total,
+                "unit_price": int(
+                    product["price"]
+                ),
+                "line_total": (
+                    int(product["price"])
+                    * quantity
+                ),
                 "image": product["image"],
             }
         )
 
-    delivery_fee = 39 if 0 < subtotal < 499 else 0
-    total = subtotal + delivery_fee
+    categories = sorted(
+        {
+            item["category"]
+            for item in normalized_items
+        }
+    )
+
+    cart = build_cart(
+        normalized_items
+    )
 
     return {
-        "user_id": user_id,
-        "items": items,
-        "item_count": sum(item["quantity"] for item in items),
-        "subtotal": subtotal,
-        "delivery_fee": delivery_fee,
-        "total": total,
-        "currency": "INR",
+        **cart,
+        "categories": categories,
     }
+
+
+# ============================================================
+# AUTONOMOUS PAYMENT ADAPTER
+# ============================================================
+
+async def autonomous_payment(
+    *,
+    agent_id: str,
+    user_id: str,
+    amount: int,
+    basket: dict[str, Any],
+) -> dict[str, Any]:
+
+    mode = (
+        await get_policy(agent_id)
+    ).get(
+        "payment_mode",
+        AUTONOMOUS_PAYMENT_MODE,
+    )
+
+    # --------------------------------------------------------
+    # SIMULATED AUTONOMOUS RAIL
+    # --------------------------------------------------------
+
+    if mode == "SIMULATED":
+
+        payment_id = (
+            f"sim_pay_{uuid.uuid4().hex[:16]}"
+        )
+
+        order_payment = {
+            "_id": payment_id,
+            "provider": "SIMULATED_AUTONOMOUS_RAIL",
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "amount": amount,
+            "currency": "INR",
+            "status": "CAPTURED",
+            "test": True,
+            "created_at": now_utc(),
+            "basket": basket,
+        }
+
+        await payments_collection.insert_one(
+            order_payment
+        )
+
+        await audit(
+            "AUTONOMOUS_PAYMENT_CAPTURED",
+            agent_id=agent_id,
+            user_id=user_id,
+            amount=amount,
+            status="SUCCESS",
+            reason=(
+                "Autonomous test rail captured "
+                "the bounded purchase."
+            ),
+            data={
+                "payment_id": payment_id,
+                "provider": (
+                    "SIMULATED_AUTONOMOUS_RAIL"
+                ),
+            },
+        )
+
+        return {
+            "success": True,
+            "provider": (
+                "SIMULATED_AUTONOMOUS_RAIL"
+            ),
+            "payment_id": payment_id,
+            "status": "CAPTURED",
+            "amount": amount,
+        }
+
+    # --------------------------------------------------------
+    # STANDARD RAZORPAY CHECKOUT
+    #
+    # NOT autonomous.
+    # Included only as fallback/compatibility.
+    # --------------------------------------------------------
+
+    if mode == "RAZORPAY_CHECKOUT":
+
+        if not (
+            RAZORPAY_KEY_ID
+            and RAZORPAY_KEY_SECRET
+        ):
+            return {
+                "success": False,
+                "error": (
+                    "Razorpay credentials are not configured."
+                ),
+            }
+
+        amount_paise = (
+            amount * 100
+        )
+
+        receipt = (
+            f"qc_{uuid.uuid4().hex[:16]}"
+        )
+
+        try:
+            response = await httpx.AsyncClient().post(
+                f"{RAZORPAY_API_BASE}/orders",
+                auth=(
+                    RAZORPAY_KEY_ID,
+                    RAZORPAY_KEY_SECRET,
+                ),
+                json={
+                    "amount": amount_paise,
+                    "currency": "INR",
+                    "receipt": receipt,
+                    "notes": {
+                        "agent_id": agent_id,
+                        "user_id": user_id,
+                    },
+                },
+                timeout=20,
+            )
+
+        except httpx.RequestError as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+            }
+
+        if response.status_code >= 400:
+            return {
+                "success": False,
+                "error": response.text,
+            }
+
+        razorpay_order = response.json()
+
+        payment_id = razorpay_order[
+            "id"
+        ]
+
+        await payments_collection.insert_one(
+            {
+                "_id": payment_id,
+                "provider": "razorpay",
+                "type": "checkout",
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "razorpay_order_id": payment_id,
+                "amount": amount,
+                "currency": "INR",
+                "status": "CREATED",
+                "created_at": now_utc(),
+            }
+        )
+
+        return {
+            "success": True,
+            "provider": "razorpay",
+            "status": "CREATED",
+            "razorpay_order_id": payment_id,
+            "requires_human_payment": True,
+            "message": (
+                "Standard Razorpay Checkout "
+                "requires human payment."
+            ),
+        }
+
+    # --------------------------------------------------------
+    # RESERVE PAY
+    # --------------------------------------------------------
+
+    if mode == "RAZORPAY_RESERVE_PAY":
+
+        return {
+            "success": False,
+            "status": "NOT_CONFIGURED",
+            "error": (
+                "Razorpay UPI Reserve Pay is not "
+                "configured for this environment. "
+                "Request Reserve Pay activation and "
+                "wire the account-specific Reserve Pay "
+                "API contract here."
+            ),
+        }
+
+    return {
+        "success": False,
+        "error": (
+            f"Unknown autonomous payment mode: {mode}"
+        ),
+    }
+
+
+# ============================================================
+# CREATE AUTONOMOUS ORDER
+# ============================================================
+
+async def execute_autonomous_purchase(
+    *,
+    agent_id: str,
+    user_id: str,
+    items: list[dict[str, Any]],
+    intent: str,
+) -> dict[str, Any]:
+
+    run_id = (
+        f"run_{uuid.uuid4().hex[:16]}"
+    )
+
+    await runs_collection.insert_one(
+        {
+            "_id": run_id,
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "intent": intent,
+            "status": "STARTED",
+            "started_at": now_utc(),
+        }
+    )
+
+    try:
+
+        basket = await build_basket(
+            items
+        )
+
+    except ValueError as exc:
+
+        await runs_collection.update_one(
+            {"_id": run_id},
+            {
+                "$set": {
+                    "status": "FAILED",
+                    "error": str(exc),
+                    "finished_at": now_utc(),
+                }
+            },
+        )
+
+        await audit(
+            "AUTONOMOUS_PURCHASE_FAILED",
+            agent_id=agent_id,
+            user_id=user_id,
+            status="FAILED",
+            reason=str(exc),
+            data={"run_id": run_id},
+        )
+
+        return {
+            "success": False,
+            "status": "FAILED",
+            "reason": str(exc),
+        }
+
+    amount = int(
+        basket["total"]
+    )
+
+    categories = basket[
+        "categories"
+    ]
+
+    await audit(
+        "AGENT_BASKET_BUILT",
+        agent_id=agent_id,
+        user_id=user_id,
+        amount=amount,
+        status="READY",
+        reason=intent,
+        data={
+            "run_id": run_id,
+            "items": basket["items"],
+            "categories": categories,
+        },
+    )
+
+    policy_result = await evaluate_purchase(
+        agent_id=agent_id,
+        user_id=user_id,
+        merchant_id=DEFAULT_MERCHANT_ID,
+        amount=amount,
+        categories=categories,
+    )
+
+    await audit(
+        "AGENT_POLICY_EVALUATED",
+        agent_id=agent_id,
+        user_id=user_id,
+        amount=amount,
+        status=policy_result[
+            "decision"
+        ],
+        reason=policy_result.get(
+            "reason"
+        ),
+        data={
+            "run_id": run_id,
+            "policy": policy_result,
+        },
+    )
+
+    if policy_result[
+        "decision"
+    ] != "ALLOW":
+
+        await runs_collection.update_one(
+            {"_id": run_id},
+            {
+                "$set": {
+                    "status": "BLOCKED",
+                    "policy_result": (
+                        policy_result
+                    ),
+                    "finished_at": now_utc(),
+                }
+            },
+        )
+
+        return {
+            "success": False,
+            "status": "BLOCKED",
+            "run_id": run_id,
+            "policy": policy_result,
+            "basket": basket,
+        }
+
+    # --------------------------------------------------------
+    # Reserve daily budget atomically.
+    # --------------------------------------------------------
+
+    policy = await get_policy(
+        agent_id
+    )
+
+    reservation = (
+        await reserve_daily_spend(
+            agent_id=agent_id,
+            amount=amount,
+            daily_limit=int(
+                policy["daily_limit"]
+            ),
+        )
+    )
+
+    if reservation is None:
+
+        await audit(
+            "AUTONOMOUS_PURCHASE_BLOCKED",
+            agent_id=agent_id,
+            user_id=user_id,
+            amount=amount,
+            status="BLOCKED",
+            reason=(
+                "Daily limit became unavailable "
+                "during atomic reservation."
+            ),
+            data={
+                "run_id": run_id,
+            },
+        )
+
+        await runs_collection.update_one(
+            {"_id": run_id},
+            {
+                "$set": {
+                    "status": "BLOCKED",
+                    "finished_at": now_utc(),
+                }
+            },
+        )
+
+        return {
+            "success": False,
+            "status": "BLOCKED",
+            "run_id": run_id,
+            "reason": (
+                "Daily limit became unavailable."
+            ),
+        }
+
+    await audit(
+        "AGENT_SPEND_RESERVED",
+        agent_id=agent_id,
+        user_id=user_id,
+        amount=amount,
+        status="RESERVED",
+        data={
+            "run_id": run_id,
+            "spent_today": reservation[
+                "amount"
+            ],
+            "daily_limit": policy[
+                "daily_limit"
+            ],
+        },
+    )
+
+    # --------------------------------------------------------
+    # Payment
+    # --------------------------------------------------------
+
+    payment = await autonomous_payment(
+        agent_id=agent_id,
+        user_id=user_id,
+        amount=amount,
+        basket=basket,
+    )
+
+    if not payment["success"]:
+
+        # Release budget because payment did not happen.
+        await release_daily_spend(
+            agent_id=agent_id,
+            amount=amount,
+        )
+
+        await audit(
+            "AUTONOMOUS_PAYMENT_FAILED",
+            agent_id=agent_id,
+            user_id=user_id,
+            amount=amount,
+            status="FAILED",
+            reason=payment.get(
+                "error"
+            ),
+            data={
+                "run_id": run_id,
+                "payment": payment,
+            },
+        )
+
+        await runs_collection.update_one(
+            {"_id": run_id},
+            {
+                "$set": {
+                    "status": "PAYMENT_FAILED",
+                    "finished_at": now_utc(),
+                }
+            },
+        )
+
+        return {
+            "success": False,
+            "status": "PAYMENT_FAILED",
+            "run_id": run_id,
+            "payment": payment,
+            "message": (
+                "No order was created and the "
+                "reserved daily budget was released."
+            ),
+        }
+
+    # --------------------------------------------------------
+    # Inventory reservation
+    # --------------------------------------------------------
+
+    inventory_changes = []
+
+    for item in basket["items"]:
+
+        result = (
+            await products_collection.find_one_and_update(
+                {
+                    "_id": item["product_id"],
+                    "stock": {
+                        "$gte": item["quantity"]
+                    },
+                },
+                {
+                    "$inc": {
+                        "stock": -item["quantity"]
+                    }
+                },
+                return_document=ReturnDocument.AFTER,
+            )
+        )
+
+        if result is None:
+
+            # Roll back previous stock changes.
+            for changed in inventory_changes:
+                await products_collection.update_one(
+                    {
+                        "_id": changed[
+                            "product_id"
+                        ]
+                    },
+                    {
+                        "$inc": {
+                            "stock": changed[
+                                "quantity"
+                            ]
+                        }
+                    },
+                )
+
+            # This is a test payment adapter.
+            # Release spend because fulfilment failed.
+            await release_daily_spend(
+                agent_id=agent_id,
+                amount=amount,
+            )
+
+            await audit(
+                "ORDER_FAILED",
+                agent_id=agent_id,
+                user_id=user_id,
+                amount=amount,
+                status="FAILED",
+                reason=(
+                    "Inventory changed before fulfilment."
+                ),
+                data={
+                    "run_id": run_id,
+                    "product_id": item[
+                        "product_id"
+                    ],
+                },
+            )
+
+            return {
+                "success": False,
+                "status": "ORDER_FAILED",
+                "reason": (
+                    "Inventory changed before "
+                    "the order could be fulfilled."
+                ),
+                "payment": payment,
+            }
+
+        inventory_changes.append(
+            {
+                "product_id": item["product_id"],
+                "quantity": item["quantity"],
+            }
+        )
+
+    # --------------------------------------------------------
+    # Order
+    # --------------------------------------------------------
+
+    order_id = (
+        f"QC-{uuid.uuid4().hex[:10].upper()}"
+    )
+
+    order = {
+        "_id": order_id,
+        "agent_id": agent_id,
+        "user_id": user_id,
+        "merchant_id": DEFAULT_MERCHANT_ID,
+        "status": "CONFIRMED",
+        "payment_status": "PAID",
+        "payment_id": payment.get(
+            "payment_id"
+        ) or payment.get(
+            "razorpay_order_id"
+        ),
+        "payment_provider": payment[
+            "provider"
+        ],
+        "items": basket["items"],
+        "subtotal": basket["subtotal"],
+        "delivery_fee": basket[
+            "delivery_fee"
+        ],
+        "total": basket["total"],
+        "currency": "INR",
+        "intent": intent,
+        "created_at": now_utc(),
+    }
+
+    await orders_collection.insert_one(
+        order
+    )
+
+    await audit(
+        "ORDER_CREATED",
+        agent_id=agent_id,
+        user_id=user_id,
+        amount=amount,
+        status="SUCCESS",
+        reason=(
+            "Purchase completed inside "
+            "agent guardrails."
+        ),
+        data={
+            "run_id": run_id,
+            "order_id": order_id,
+            "payment": payment,
+        },
+    )
+
+    await runs_collection.update_one(
+        {"_id": run_id},
+        {
+            "$set": {
+                "status": "COMPLETED",
+                "order_id": order_id,
+                "payment_id": payment.get(
+                    "payment_id"
+                ),
+                "finished_at": now_utc(),
+            }
+        },
+    )
+
+    return {
+        "success": True,
+        "status": "COMPLETED",
+        "run_id": run_id,
+        "order": json_safe(order),
+        "policy": policy_result,
+        "payment": payment,
+    }
+
+
+# ============================================================
+# APPS UI
+# ============================================================
+
+apps = Apps()
 
 
 def load_product_ui() -> str:
     if not PRODUCT_UI_FILE.exists():
         raise FileNotFoundError(
-            f"Missing UI file: {PRODUCT_UI_FILE}"
+            f"Missing {PRODUCT_UI_FILE}"
         )
 
     return PRODUCT_UI_FILE.read_text(
@@ -301,84 +1573,61 @@ def load_product_ui() -> str:
     )
 
 
-def verify_razorpay_signature(
-    order_id: str,
-    payment_id: str,
-    received_signature: str,
-) -> bool:
-    if not RAZORPAY_KEY_SECRET:
-        return False
-
-    message = f"{order_id}|{payment_id}"
-
-    expected_signature = hmac.new(
-        RAZORPAY_KEY_SECRET.encode("utf-8"),
-        message.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-    return hmac.compare_digest(
-        expected_signature,
-        received_signature,
-    )
-
-
-# ============================================================
-# APPS SDK
-# ============================================================
-
-apps = Apps()
-
 apps.add_html_resource(
     PRODUCT_UI_URI,
     load_product_ui(),
     name="quickcart-product-catalogue",
     title="QuickCart Product Catalogue",
     description=(
-        "QuickCart product catalogue with images, "
-        "prices, ratings, cart and payment actions."
+        "Interactive product catalogue and "
+        "autonomous shopping agent."
     ),
     prefers_border=True,
 )
 
 
 # ============================================================
-# UI PRODUCT TOOLS
+# UI TOOLS
 # ============================================================
 
 @apps.tool(
     resource_uri=PRODUCT_UI_URI,
     title="Search Products",
     description=(
-        "Search QuickCart products and show them "
-        "in the interactive product catalogue."
+        "Search the merchant catalogue and "
+        "display product cards."
     ),
 )
-def search_products(
+async def search_products(
     query: str,
     category: str | None = None,
     max_price: int | None = None,
     limit: int = 8,
 ) -> dict[str, Any]:
 
-    if not query.strip():
-        return {
-            "success": False,
-            "message": "Search query cannot be empty.",
-            "query": query,
-            "count": 0,
-            "products": [],
+    limit = max(
+        1,
+        min(limit, 50),
+    )
+
+    terms = normalize(
+        query
+    ).split()
+
+    documents = await products_collection.find(
+        {
+            "active": True,
         }
+    ).to_list(length=None)
 
-    limit = max(1, min(limit, 50))
-    terms = normalize(query).split()
+    matches = []
 
-    matches: list[tuple[int, dict[str, Any]]] = []
-
-    for product in PRODUCTS:
+    for product in documents:
 
         if category is not None:
-            if normalize(product["category"]) != normalize(category):
+            if normalize(
+                product["category"]
+            ) != normalize(category):
                 continue
 
         if max_price is not None:
@@ -404,19 +1653,21 @@ def search_products(
         )
 
         if score > 0:
-            matches.append((score, product))
+            matches.append(
+                (score, product)
+            )
 
     matches.sort(
-        key=lambda item: (
-            -item[0],
-            -item[1]["rating"],
-            item[1]["price"],
+        key=lambda entry: (
+            -entry[0],
+            -entry[1]["rating"],
+            entry[1]["price"],
         )
     )
 
     selected = [
-        product
-        for _, product in matches[:limit]
+        entry[1]
+        for entry in matches[:limit]
     ]
 
     return {
@@ -424,7 +1675,7 @@ def search_products(
         "query": query,
         "count": len(selected),
         "products": [
-            public_product(product)
+            product_public(product)
             for product in selected
         ],
     }
@@ -433,62 +1684,42 @@ def search_products(
 @apps.tool(
     resource_uri=PRODUCT_UI_URI,
     title="Product Catalogue",
-    description="Browse QuickCart products.",
+    description="Browse the merchant catalogue.",
 )
-def get_catalogue(
+async def get_catalogue(
     category: str | None = None,
     limit: int = 20,
 ) -> dict[str, Any]:
 
-    limit = max(1, min(limit, 50))
-
-    products = PRODUCTS
+    query: dict[str, Any] = {
+        "active": True,
+    }
 
     if category:
-        products = [
-            product
-            for product in products
-            if normalize(product["category"])
-            == normalize(category)
-        ]
+        query["category"] = normalize(
+            category
+        )
 
-    selected = products[:limit]
+    documents = await products_collection.find(
+        query
+    ).sort(
+        [
+            ("rating", -1),
+            ("price", 1),
+        ]
+    ).limit(
+        max(1, min(limit, 50))
+    ).to_list(
+        length=None
+    )
 
     return {
         "success": True,
         "category": category,
-        "count": len(selected),
+        "count": len(documents),
         "products": [
-            public_product(product)
-            for product in selected
-        ],
-    }
-
-
-@apps.tool(
-    resource_uri=PRODUCT_UI_URI,
-    title="Product Details",
-    description="Show details for a product.",
-)
-def get_product_details(
-    product_id: str,
-) -> dict[str, Any]:
-
-    product = get_product(product_id)
-
-    if product is None:
-        return {
-            "success": False,
-            "error": "Product not found.",
-            "products": [],
-            "count": 0,
-        }
-
-    return {
-        "success": True,
-        "count": 1,
-        "products": [
-            public_product(product)
+            product_public(product)
+            for product in documents
         ],
     }
 
@@ -500,54 +1731,304 @@ def get_product_details(
 mcp = MCPServer(
     APP_NAME,
     instructions="""
-You are QuickCart, an agentic commerce assistant.
+You are QuickCart's autonomous commerce agent.
 
-Use the shopping tools to search, browse, manage the cart,
-create payments, and check orders.
+You can:
+- search a real merchant catalogue
+- inspect an agent's financial policy
+- evaluate purchases against hard guardrails
+- autonomously purchase products within the mandate
+- show spending and audit history
+- check orders
 
-IMPORTANT:
-- Search products when the user asks what is available.
-- Use the interactive product UI whenever available.
-- Never invent products, prices, stock or order IDs.
-- Inspect the cart before payment.
-- create_payment_order only creates a Razorpay payment attempt.
-- Do not claim payment succeeded until the server confirms it.
-- Only complete the purchase after genuine payment verification.
-- Do not expose the Razorpay secret.
+AUTONOMOUS PURCHASE RULES:
+
+1. Never invent products, prices, inventory or spending limits.
+2. For normal shopping requests, search the catalogue.
+3. For autonomous-agent requests, use the agent policy.
+4. The backend policy engine is authoritative.
+5. Never override a BLOCK decision.
+6. Never claim that a payment happened unless the backend
+   returned success.
+7. In SIMULATED autonomous mode, purchases are explicitly
+   marked as simulated test payments.
+8. Standard Razorpay Checkout requires human interaction.
+9. Do not describe standard Checkout as autonomous payment.
+10. Only a Razorpay Reserve Pay integration activated for the
+    merchant can provide the real "authorize once, debit later"
+    autonomous payment rail.
 """,
     extensions=[apps],
 )
 
 
 # ============================================================
-# NORMAL MCP TOOLS
+# AGENT TOOLS
 # ============================================================
 
 @mcp.tool()
-def list_categories() -> dict[str, Any]:
-    """List all shopping categories."""
+async def get_agent_policy(
+    agent_id: str = DEFAULT_AGENT_ID,
+) -> dict[str, Any]:
+    """Return the agent's autonomous spending mandate."""
 
-    categories = sorted(
-        {
-            product["category"]
-            for product in PRODUCTS
+    agent = await get_agent(
+        agent_id
+    )
+
+    policy = await get_policy(
+        agent_id
+    )
+
+    if not agent or not policy:
+        return {
+            "success": False,
+            "error": "Agent not found.",
         }
+
+    return {
+        "success": True,
+        "agent": json_safe(agent),
+        "policy": json_safe(policy),
+        "spend_today": await get_daily_spend(
+            agent_id
+        ),
+        "payment_mode": payment_mode_description(),
+    }
+
+
+@mcp.tool()
+async def evaluate_agent_purchase_tool(
+    agent_id: str,
+    amount: int,
+    category: str,
+    user_id: str = DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """
+    Deterministically evaluate whether an autonomous
+    purchase is inside the agent's mandate.
+    """
+
+    result = await evaluate_purchase(
+        agent_id=agent_id,
+        user_id=user_id,
+        merchant_id=DEFAULT_MERCHANT_ID,
+        amount=amount,
+        categories=[normalize(category)],
+    )
+
+    await audit(
+        "POLICY_CHECK",
+        agent_id=agent_id,
+        user_id=user_id,
+        amount=amount,
+        status=result["decision"],
+        reason=result.get("reason"),
+        data={
+            "category": category,
+        },
     )
 
     return {
         "success": True,
-        "categories": categories,
+        "agent_id": agent_id,
+        "amount": amount,
+        **result,
+    }
+
+
+@mcp.tool()
+async def autonomous_purchase(
+    items: list[dict[str, Any]],
+    intent: str,
+    agent_id: str = DEFAULT_AGENT_ID,
+    user_id: str = DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """
+    Execute an autonomous purchase.
+
+    No human payment action is requested in SIMULATED mode.
+    The backend first checks the agent's hard financial
+    guardrails, then executes the configured payment rail.
+    """
+
+    return await execute_autonomous_purchase(
+        agent_id=agent_id,
+        user_id=user_id,
+        items=items,
+        intent=intent,
+    )
+
+
+@mcp.tool()
+async def get_agent_spending(
+    agent_id: str = DEFAULT_AGENT_ID,
+) -> dict[str, Any]:
+    """Show today's autonomous spending and remaining budget."""
+
+    policy = await get_policy(
+        agent_id
+    )
+
+    if not policy:
+        return {
+            "success": False,
+            "error": "Agent policy not found.",
+        }
+
+    spent = await get_daily_spend(
+        agent_id
+    )
+
+    daily_limit = int(
+        policy["daily_limit"]
+    )
+
+    return {
+        "success": True,
+        "agent_id": agent_id,
+        "date": today_key(),
+        "daily_limit": daily_limit,
+        "spent_today": spent,
+        "remaining_today": max(
+            0,
+            daily_limit - spent,
+        ),
+        "per_transaction_limit": int(
+            policy["per_transaction_limit"]
+        ),
+    }
+
+
+@mcp.tool()
+async def get_agent_activity(
+    agent_id: str = DEFAULT_AGENT_ID,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Return the latest audit events for an agent."""
+
+    events = await audit_collection.find(
+        {
+            "agent_id": agent_id,
+        }
+    ).sort(
+        "timestamp",
+        -1,
+    ).limit(
+        max(1, min(limit, 100))
+    ).to_list(
+        length=None
+    )
+
+    return {
+        "success": True,
+        "count": len(events),
+        "events": [
+            json_safe(event)
+            for event in events
+        ],
+    }
+
+
+@mcp.tool()
+async def explain_agent_purchase(
+    run_id: str,
+) -> dict[str, Any]:
+    """
+    Explain why an autonomous purchase was allowed,
+    blocked or failed.
+    """
+
+    run = await runs_collection.find_one(
+        {
+            "_id": run_id,
+        }
+    )
+
+    if not run:
+        return {
+            "success": False,
+            "error": "Agent run not found.",
+        }
+
+    events = await audit_collection.find(
+        {
+            "data.run_id": run_id,
+        }
+    ).sort(
+        "timestamp",
+        1,
+    ).to_list(
+        length=None
+    )
+
+    return {
+        "success": True,
+        "run": json_safe(run),
+        "audit": [
+            json_safe(event)
+            for event in events
+        ],
+    }
+
+
+# ============================================================
+# SHOPPING TOOLS
+# ============================================================
+
+@mcp.tool()
+async def list_categories() -> dict[str, Any]:
+    """List all catalogue categories."""
+
+    categories = await products_collection.distinct(
+        "category",
+        {
+            "active": True,
+        },
+    )
+
+    return {
+        "success": True,
+        "categories": sorted(
+            categories
+        ),
         "count": len(categories),
     }
 
 
 @mcp.tool()
-def add_to_cart(
+async def get_cart(
+    user_id: str = DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Get the persistent cart from MongoDB."""
+
+    cart = await carts_collection.find_one(
+        {
+            "_id": f"cart:{user_id}",
+        }
+    )
+
+    if not cart:
+        return {
+            "success": True,
+            "cart": build_cart([]),
+        }
+
+    return {
+        "success": True,
+        "cart": json_safe(
+            cart
+        ),
+    }
+
+
+@mcp.tool()
+async def add_to_cart(
     product_id: str,
     quantity: int = 1,
-    user_id: str = "demo-user",
+    user_id: str = DEFAULT_USER_ID,
 ) -> dict[str, Any]:
-    """Add a product to the cart."""
+    """Add an item to the persistent MongoDB cart."""
 
     if quantity <= 0:
         return {
@@ -555,29 +2036,147 @@ def add_to_cart(
             "error": "Quantity must be greater than zero.",
         }
 
-    product = get_product(product_id)
+    product = await products_collection.find_one(
+        {
+            "_id": product_id,
+            "active": True,
+        }
+    )
 
-    if product is None:
+    if not product:
         return {
             "success": False,
             "error": "Product not found.",
         }
 
-    cart = CARTS.setdefault(user_id, {})
+    existing = await carts_collection.find_one(
+        {
+            "_id": f"cart:{user_id}",
+        }
+    )
 
-    current = cart.get(product_id, 0)
-    new_quantity = current + quantity
+    current_quantity = 0
+
+    if existing:
+        for item in existing.get(
+            "items",
+            [],
+        ):
+            if item["product_id"] == product_id:
+                current_quantity = item[
+                    "quantity"
+                ]
+
+    new_quantity = (
+        current_quantity + quantity
+    )
 
     if new_quantity > product["stock"]:
         return {
             "success": False,
             "error": (
-                f"Only {product['stock']} units "
-                f"are available."
+                f"Only {product['stock']} "
+                f"units are available."
             ),
         }
 
-    cart[product_id] = new_quantity
+    cart_id = f"cart:{user_id}"
+
+    if current_quantity > 0:
+
+        await carts_collection.update_one(
+            {
+                "_id": cart_id,
+                "items.product_id": product_id,
+            },
+            {
+                "$set": {
+                    "items.$.quantity": new_quantity,
+                    "updated_at": now_utc(),
+                }
+            },
+        )
+
+    else:
+
+        await carts_collection.update_one(
+            {
+                "_id": cart_id,
+            },
+            {
+                "$setOnInsert": {
+                    "user_id": user_id,
+                    "created_at": now_utc(),
+                },
+                "$push": {
+                    "items": {
+                        "product_id": product_id,
+                        "name": product["name"],
+                        "category": product["category"],
+                        "quantity": quantity,
+                        "unit_price": product["price"],
+                        "line_total": (
+                            product["price"]
+                            * quantity
+                        ),
+                        "image": product["image"],
+                    }
+                },
+                "$set": {
+                    "updated_at": now_utc(),
+                },
+            },
+            upsert=True,
+        )
+
+    # Recalculate line totals.
+    cart = await carts_collection.find_one(
+        {"_id": cart_id}
+    )
+
+    updated_items = []
+
+    for item in cart.get(
+        "items",
+        [],
+    ):
+
+        product_now = await products_collection.find_one(
+            {"_id": item["product_id"]}
+        )
+
+        if product_now:
+            item["unit_price"] = product_now[
+                "price"
+            ]
+            item["line_total"] = (
+                product_now["price"]
+                * item["quantity"]
+            )
+            updated_items.append(item)
+
+    cart_summary = build_cart(
+        updated_items
+    )
+
+    await carts_collection.update_one(
+        {"_id": cart_id},
+        {
+            "$set": {
+                "items": updated_items,
+                "subtotal": cart_summary[
+                    "subtotal"
+                ],
+                "delivery_fee": cart_summary[
+                    "delivery_fee"
+                ],
+                "total": cart_summary[
+                    "total"
+                ],
+                "updated_at": now_utc(),
+            }
+        },
+    )
 
     return {
         "success": True,
@@ -585,357 +2184,27 @@ def add_to_cart(
             f"Added {quantity} × "
             f"{product['name']}."
         ),
-        "cart": calculate_cart(user_id),
-    }
-
-
-@mcp.tool()
-def update_cart_item(
-    product_id: str,
-    quantity: int,
-    user_id: str = "demo-user",
-) -> dict[str, Any]:
-    """Set the exact cart quantity."""
-
-    if quantity < 0:
-        return {
-            "success": False,
-            "error": "Quantity cannot be negative.",
-        }
-
-    product = get_product(product_id)
-
-    if product is None:
-        return {
-            "success": False,
-            "error": "Product not found.",
-        }
-
-    cart = CARTS.setdefault(user_id, {})
-
-    if quantity == 0:
-        cart.pop(product_id, None)
-    else:
-        if quantity > product["stock"]:
-            return {
-                "success": False,
-                "error": "Not enough stock.",
-            }
-
-        cart[product_id] = quantity
-
-    return {
-        "success": True,
-        "cart": calculate_cart(user_id),
-    }
-
-
-@mcp.tool()
-def remove_from_cart(
-    product_id: str,
-    user_id: str = "demo-user",
-) -> dict[str, Any]:
-    """Remove one item from the cart."""
-
-    cart = CARTS.setdefault(user_id, {})
-
-    removed = cart.pop(product_id, None)
-
-    return {
-        "success": True,
-        "removed": removed is not None,
-        "cart": calculate_cart(user_id),
-    }
-
-
-@mcp.tool()
-def get_cart(
-    user_id: str = "demo-user",
-) -> dict[str, Any]:
-    """Return the current cart."""
-
-    return {
-        "success": True,
-        "cart": calculate_cart(user_id),
-    }
-
-
-@mcp.tool()
-def clear_cart(
-    user_id: str = "demo-user",
-) -> dict[str, Any]:
-    """Clear the cart."""
-
-    CARTS[user_id] = {}
-
-    return {
-        "success": True,
-        "message": "Cart cleared.",
-        "cart": calculate_cart(user_id),
+        "cart": cart_summary,
     }
 
 
 # ============================================================
-# RAZORPAY: CREATE PAYMENT ORDER
+# ORDER HISTORY
 # ============================================================
 
 @mcp.tool()
-def create_payment_order(
-    user_id: str = "demo-user",
-) -> dict[str, Any]:
-    """
-    Create a Razorpay Test Mode Order for the current cart.
-
-    This DOES NOT mark the QuickCart order as paid.
-    """
-
-    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
-        return {
-            "success": False,
-            "error": (
-                "Razorpay credentials are not configured "
-                "on the server."
-            ),
-        }
-
-    cart = calculate_cart(user_id)
-
-    if not cart["items"]:
-        return {
-            "success": False,
-            "error": "Your cart is empty.",
-        }
-
-    amount_paise = int(
-        round(cart["total"] * 100)
-    )
-
-    receipt = (
-        f"qc_{uuid.uuid4().hex[:16]}"
-    )
-
-    payload = {
-        "amount": amount_paise,
-        "currency": "INR",
-        "receipt": receipt,
-        "notes": {
-            "user_id": user_id,
-            "source": "quickcart_chatgpt",
-        },
-    }
-
-    try:
-        response = httpx.post(
-            f"{RAZORPAY_API_BASE}/orders",
-            json=payload,
-            auth=(
-                RAZORPAY_KEY_ID,
-                RAZORPAY_KEY_SECRET,
-            ),
-            timeout=20,
-        )
-
-        if response.status_code >= 400:
-            return {
-                "success": False,
-                "error": (
-                    "Razorpay rejected the order."
-                ),
-                "razorpay_response": response.text,
-            }
-
-        razorpay_order = response.json()
-
-    except httpx.RequestError as exc:
-        return {
-            "success": False,
-            "error": (
-                f"Could not reach Razorpay: {exc}"
-            ),
-        }
-
-    razorpay_order_id = razorpay_order["id"]
-
-    # Save immutable payment snapshot.
-    PAYMENTS[razorpay_order_id] = {
-        "razorpay_order_id": razorpay_order_id,
-        "user_id": user_id,
-        "cart": cart,
-        "status": "CREATED",
-        "amount_paise": amount_paise,
-    }
-
-    payment_url = (
-        f"{PUBLIC_BASE_URL}/payment/"
-        f"{razorpay_order_id}"
-    )
-
-    return {
-        "success": True,
-        "test_mode": True,
-        "razorpay_order_id": razorpay_order_id,
-        "razorpay_key_id": RAZORPAY_KEY_ID,
-        "amount": cart["total"],
-        "amount_paise": amount_paise,
-        "currency": "INR",
-        "payment_url": payment_url,
-        "message": (
-            "Razorpay Test Mode payment order "
-            "created. Open payment_url to continue."
-        ),
-        "cart": cart,
-    }
-
-
-# ============================================================
-# PAYMENT STATUS
-# ============================================================
-
-@mcp.tool()
-def get_payment_status(
-    razorpay_order_id: str,
-) -> dict[str, Any]:
-    """Check the server-side payment attempt status."""
-
-    payment = PAYMENTS.get(
-        razorpay_order_id
-    )
-
-    if payment is None:
-        return {
-            "success": False,
-            "error": "Payment attempt not found.",
-        }
-
-    return {
-        "success": True,
-        "payment": {
-            "razorpay_order_id": payment[
-                "razorpay_order_id"
-            ],
-            "status": payment["status"],
-            "amount_paise": payment[
-                "amount_paise"
-            ],
-            "user_id": payment["user_id"],
-            "payment_id": payment.get(
-                "payment_id"
-            ),
-        },
-    }
-
-
-# ============================================================
-# CHECKOUT / QUICKCART ORDER
-# ============================================================
-
-@mcp.tool()
-def checkout(
-    confirm: bool,
-    user_id: str = "demo-user",
-) -> dict[str, Any]:
-    """
-    Finalize a QuickCart order only after payment.
-
-    confirm=True alone is NOT enough.
-    The matching Razorpay payment must have been
-    successfully verified first.
-    """
-
-    if not confirm:
-        return {
-            "success": False,
-            "requires_confirmation": True,
-            "message": (
-                "Checkout was not executed."
-            ),
-        }
-
-    payment_attempts = [
-        payment
-        for payment in PAYMENTS.values()
-        if (
-            payment["user_id"] == user_id
-            and payment["status"] == "PAID"
-        )
-    ]
-
-    if not payment_attempts:
-        return {
-            "success": False,
-            "error": (
-                "No verified Razorpay payment "
-                "was found for this user."
-            ),
-        }
-
-    payment = payment_attempts[-1]
-    cart = payment["cart"]
-
-    if not cart["items"]:
-        return {
-            "success": False,
-            "error": "Paid cart is empty.",
-        }
-
-    order_id = (
-        f"QC-{uuid.uuid4().hex[:10].upper()}"
-    )
-
-    order = {
-        "order_id": order_id,
-        "user_id": user_id,
-        "status": "CONFIRMED",
-        "payment_status": "PAID",
-        "razorpay_order_id": (
-            payment["razorpay_order_id"]
-        ),
-        "razorpay_payment_id": payment.get(
-            "payment_id"
-        ),
-        "items": cart["items"],
-        "subtotal": cart["subtotal"],
-        "delivery_fee": cart["delivery_fee"],
-        "total": cart["total"],
-        "currency": cart["currency"],
-        "payment_method": "razorpay_test",
-    }
-
-    ORDERS[order_id] = order
-
-    # Reduce inventory.
-    for item in cart["items"]:
-        product = get_product(
-            item["product_id"]
-        )
-
-        if product is not None:
-            product["stock"] = max(
-                0,
-                product["stock"] - item["quantity"],
-            )
-
-    CARTS[user_id] = {}
-
-    payment["status"] = "ORDER_CREATED"
-    payment["quickcart_order_id"] = order_id
-
-    return {
-        "success": True,
-        "message": "Paid order created.",
-        "order": order,
-    }
-
-
-@mcp.tool()
-def get_order(
+async def get_order(
     order_id: str,
 ) -> dict[str, Any]:
-    """Get an existing QuickCart order."""
+    """Get a persistent MongoDB order."""
 
-    order = ORDERS.get(order_id)
+    order = await orders_collection.find_one(
+        {
+            "_id": order_id,
+        }
+    )
 
-    if order is None:
+    if not order:
         return {
             "success": False,
             "error": "Order not found.",
@@ -943,45 +2212,211 @@ def get_order(
 
     return {
         "success": True,
-        "order": order,
+        "order": json_safe(order),
     }
 
 
 @mcp.tool()
-def list_orders(
-    user_id: str = "demo-user",
+async def list_orders(
+    user_id: str = DEFAULT_USER_ID,
 ) -> dict[str, Any]:
-    """List orders for a user."""
+    """List a user's orders."""
 
-    orders = [
-        order
-        for order in ORDERS.values()
-        if order["user_id"] == user_id
-    ]
+    orders = await orders_collection.find(
+        {
+            "user_id": user_id,
+        }
+    ).sort(
+        "created_at",
+        -1,
+    ).limit(
+        100
+    ).to_list(
+        length=None
+    )
 
     return {
         "success": True,
         "count": len(orders),
-        "orders": orders,
+        "orders": [
+            json_safe(order)
+            for order in orders
+        ],
     }
 
 
 # ============================================================
-# FASTAPI APP
+# FASTAPI LIFESPAN
 # ============================================================
 
 @contextlib.asynccontextmanager
 async def lifespan(
-    _app: FastAPI,
+    app: FastAPI,
 ):
-    async with mcp.session_manager.run():
-        yield
 
+    global mongo_client
+    global db
+
+    global agents_collection
+    global policies_collection
+    global products_collection
+    global carts_collection
+    global orders_collection
+    global payments_collection
+    global spend_collection
+    global runs_collection
+    global audit_collection
+
+    if not MONGODB_URI:
+        raise RuntimeError(
+            "MONGODB_URI is not configured."
+        )
+
+    mongo_client = AsyncMongoClient(
+        MONGODB_URI
+    )
+
+    db = mongo_client[
+        MONGODB_DB
+    ]
+
+    # Verify database connectivity.
+    ping = await db.command(
+        "ping"
+    )
+
+    if int(ping["ok"]) != 1:
+        raise RuntimeError(
+            "MongoDB ping failed."
+        )
+
+    agents_collection = db[
+        "agents"
+    ]
+
+    policies_collection = db[
+        "agent_policies"
+    ]
+
+    products_collection = db[
+        "products"
+    ]
+
+    carts_collection = db[
+        "carts"
+    ]
+
+    orders_collection = db[
+        "orders"
+    ]
+
+    payments_collection = db[
+        "payments"
+    ]
+
+    spend_collection = db[
+        "agent_spend"
+    ]
+
+    runs_collection = db[
+        "agent_runs"
+    ]
+
+    audit_collection = db[
+        "audit_events"
+    ]
+
+    # Indexes.
+    await products_collection.create_index(
+        [
+            ("merchant_id", 1),
+            ("category", 1),
+        ]
+    )
+
+    await products_collection.create_index(
+        [
+            ("name", "text"),
+            ("brand", "text"),
+            ("description", "text"),
+        ]
+    )
+
+    await orders_collection.create_index(
+        [
+            ("user_id", 1),
+            ("created_at", -1),
+        ]
+    )
+
+    await audit_collection.create_index(
+        [
+            ("agent_id", 1),
+            ("timestamp", -1),
+        ]
+    )
+
+    await spend_collection.create_index(
+        [
+            ("agent_id", 1),
+            ("date", 1),
+        ],
+        unique=True,
+    )
+
+    # Seed products safely.
+    for product in DEFAULT_PRODUCTS:
+        await products_collection.update_one(
+            {
+                "_id": product["_id"],
+            },
+            {
+                "$setOnInsert": product,
+            },
+            upsert=True,
+        )
+
+    await ensure_demo_agent()
+
+    app.state.mongo_client = mongo_client
+    app.state.db = db
+
+    print(
+        "MongoDB connected:",
+        MONGODB_DB,
+    )
+
+    print(
+        "Agent:",
+        DEFAULT_AGENT_ID,
+    )
+
+    print(
+        "Daily limit: ₹50,000"
+    )
+
+    print(
+        "Autonomous payment mode:",
+        AUTONOMOUS_PAYMENT_MODE,
+    )
+
+    yield
+
+    if mongo_client:
+        await mongo_client.close()
+
+
+# ============================================================
+# FASTAPI
+# ============================================================
 
 app = FastAPI(
     title=APP_NAME,
     version=APP_VERSION,
-    description="Agentic commerce MCP server.",
+    description=(
+        "MongoDB-backed autonomous commerce "
+        "agent with bounded spending."
+    ),
     lifespan=lifespan,
 )
 
@@ -995,25 +2430,15 @@ app.add_middleware(
     allow_origins=[
         "https://chatgpt.com",
         "https://chat.openai.com",
-        PUBLIC_BASE_URL,
     ],
     allow_credentials=True,
     allow_methods=[
         "GET",
         "POST",
-        "DELETE",
         "OPTIONS",
     ],
     allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "Accept",
-        "Origin",
-        "Last-Event-ID",
-        "Mcp-Method",
-        "Mcp-Name",
-        "Mcp-Protocol-Version",
-        "Mcp-Session-Id",
+        "*",
     ],
     expose_headers=[
         "Mcp-Session-Id",
@@ -1022,7 +2447,7 @@ app.add_middleware(
 
 
 # ============================================================
-# NORMAL ROUTES
+# NORMAL HTTP ROUTES
 # ============================================================
 
 @app.get("/")
@@ -1031,520 +2456,156 @@ async def root():
         "name": APP_NAME,
         "version": APP_VERSION,
         "status": "online",
-        "mcp_endpoint": MCP_URL,
-        "razorpay": (
-            "configured"
-            if RAZORPAY_KEY_ID
-            else "not configured"
+        "mcp": MCP_URL,
+        "agent": DEFAULT_AGENT_ID,
+        "autonomous_payment_mode": (
+            AUTONOMOUS_PAYMENT_MODE
         ),
     }
 
 
 @app.get("/health")
 async def health():
+
+    mongo_ok = False
+
+    if db is not None:
+        try:
+            result = await db.command(
+                "ping"
+            )
+            mongo_ok = (
+                int(result["ok"]) == 1
+            )
+        except Exception:
+            mongo_ok = False
+
     return {
         "status": "ok",
         "service": APP_NAME,
         "version": APP_VERSION,
-        "products": len(PRODUCTS),
-        "orders": len(ORDERS),
-        "payment_attempts": len(PAYMENTS),
-        "razorpay_test_mode": bool(
-            RAZORPAY_KEY_ID
+        "mongodb": mongo_ok,
+        "razorpay_test_keys": (
+            RAZORPAY_KEY_ID.startswith(
+                "rzp_test_"
+            )
+            and bool(
+                RAZORPAY_KEY_SECRET
+            )
         ),
+        "autonomous_payment_mode": (
+            AUTONOMOUS_PAYMENT_MODE
+        ),
+        "agent": DEFAULT_AGENT_ID,
+        "daily_limit": 50000,
     }
 
 
-@app.get("/catalogue")
-async def catalogue():
+@app.get("/agent")
+async def agent_http():
+    agent = await get_agent(
+        DEFAULT_AGENT_ID
+    )
+
+    policy = await get_policy(
+        DEFAULT_AGENT_ID
+    )
+
     return {
-        "success": True,
-        "count": len(PRODUCTS),
-        "products": PRODUCTS,
+        "agent": json_safe(agent),
+        "policy": json_safe(policy),
+        "spending": {
+            "today": await get_daily_spend(
+                DEFAULT_AGENT_ID
+            ),
+        },
     }
 
 
-# ============================================================
-# RAZORPAY PAYMENT PAGE
-#
-# IMPORTANT:
-# This page is hosted by YOUR FastAPI server.
-# The Razorpay secret is never sent here.
-# ============================================================
-
-@app.get(
-    "/payment/{razorpay_order_id}",
-    response_class=HTMLResponse,
-)
-async def payment_page(
-    razorpay_order_id: str,
+@app.get("/agent/audit")
+async def audit_http(
+    limit: int = 50,
 ):
-    payment = PAYMENTS.get(
-        razorpay_order_id
-    )
 
-    if payment is None:
-        return HTMLResponse(
-            content="""
-            <h2>Payment session not found.</h2>
-            <p>Please create a new payment attempt.</p>
-            """,
-            status_code=404,
-        )
-
-    if not RAZORPAY_KEY_ID:
-        return HTMLResponse(
-            content="""
-            <h2>Razorpay is not configured.</h2>
-            """,
-            status_code=500,
-        )
-
-    amount = payment["amount_paise"]
-    user_id = payment["user_id"]
-
-    checkout_html = f"""
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta
-        name="viewport"
-        content="width=device-width,initial-scale=1"
-    >
-    <title>QuickCart Payment</title>
-
-    <style>
-        body {{
-            margin: 0;
-            min-height: 100vh;
-            display: grid;
-            place-items: center;
-            background: #f5f5f5;
-            font-family:
-                -apple-system,
-                BlinkMacSystemFont,
-                "Inter",
-                sans-serif;
-        }}
-
-        .card {{
-            width: min(420px, calc(100% - 32px));
-            background: white;
-            padding: 28px;
-            border-radius: 20px;
-            box-shadow:
-                0 10px 40px
-                rgba(0,0,0,.08);
-        }}
-
-        h1 {{
-            margin: 0 0 8px;
-            font-size: 24px;
-        }}
-
-        .subtitle {{
-            color: #666;
-            font-size: 14px;
-            margin-bottom: 24px;
-        }}
-
-        .amount {{
-            font-size: 32px;
-            font-weight: 800;
-            margin: 18px 0 24px;
-        }}
-
-        button {{
-            width: 100%;
-            border: none;
-            border-radius: 12px;
-            padding: 14px;
-            background: #111;
-            color: white;
-            font-size: 16px;
-            font-weight: 700;
-            cursor: pointer;
-        }}
-
-        button:disabled {{
-            opacity: .6;
-        }}
-
-        .status {{
-            margin-top: 16px;
-            font-size: 14px;
-            color: #555;
-            line-height: 1.5;
-        }}
-
-        .success {{
-            color: #087443;
-        }}
-
-        .error {{
-            color: #b42318;
-        }}
-    </style>
-
-    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-</head>
-
-<body>
-
-<div class="card">
-
-    <h1>QuickCart Payment</h1>
-
-    <div class="subtitle">
-        Razorpay Test Mode
-    </div>
-
-    <div class="amount">
-        ₹{payment["amount_paise"] / 100:.2f}
-    </div>
-
-    <button
-        id="payButton"
-        onclick="startPayment()"
-    >
-        Pay Now
-    </button>
-
-    <div
-        id="status"
-        class="status"
-    >
-        Test payment only. No real money will be charged.
-    </div>
-
-</div>
-
-<script>
-
-const razorpayKey = {RAZORPAY_KEY_ID!r};
-const razorpayOrderId = {razorpay_order_id!r};
-const userId = {user_id!r};
-const amountPaise = {amount};
-
-function setStatus(
-    message,
-    className = ""
-) {{
-    const element =
-        document.getElementById("status");
-
-    element.className =
-        "status " + className;
-
-    element.textContent =
-        message;
-}}
-
-
-async function startPayment() {{
-
-    const button =
-        document.getElementById(
-            "payButton"
-        );
-
-    button.disabled = true;
-
-    try {{
-
-        setStatus(
-            "Opening Razorpay Checkout..."
-        );
-
-        const options = {{
-
-            key: razorpayKey,
-
-            amount: amountPaise,
-
-            currency: "INR",
-
-            name: "QuickCart",
-
-            description:
-                "QuickCart Test Payment",
-
-            order_id:
-                razorpayOrderId,
-
-            theme: {{
-                color: "#111111"
-            }},
-
-            handler:
-                async function(response) {{
-
-                    setStatus(
-                        "Verifying payment..."
-                    );
-
-                    try {{
-
-                        const verifyResponse =
-                            await fetch(
-                                "/payment/verify",
-                                {{
-                                    method: "POST",
-                                    headers: {{
-                                        "Content-Type":
-                                            "application/json"
-                                    }},
-                                    body:
-                                        JSON.stringify({{
-                                            user_id:
-                                                userId,
-
-                                            razorpay_order_id:
-                                                response.razorpay_order_id,
-
-                                            razorpay_payment_id:
-                                                response.razorpay_payment_id,
-
-                                            razorpay_signature:
-                                                response.razorpay_signature
-                                        }})
-                                }}
-                            );
-
-                        const result =
-                            await verifyResponse.json();
-
-                        if (
-                            !verifyResponse.ok ||
-                            !result.success
-                        ) {{
-                            throw new Error(
-                                result.error ||
-                                "Payment verification failed"
-                            );
-                        }}
-
-                        setStatus(
-                            "Payment verified successfully. "
-                            + "You can return to ChatGPT.",
-                            "success"
-                        );
-
-                        button.textContent =
-                            "Payment Successful";
-
-                    }} catch (error) {{
-
-                        setStatus(
-                            error.message ||
-                            "Payment verification failed.",
-                            "error"
-                        );
-
-                        button.disabled =
-                            false;
-                    }}
-                }},
-
-            modal: {{
-                ondismiss:
-                    function() {{
-                        setStatus(
-                            "Payment window closed."
-                        );
-
-                        button.disabled =
-                            false;
-                    }}
-            }}
-
-        }};
-
-        const razorpay =
-            new Razorpay(options);
-
-        razorpay.on(
-            "payment.failed",
-            function(response) {{
-                setStatus(
-                    "Payment failed: "
-                    + (
-                        response.error?.description
-                        || "Unknown error"
-                    ),
-                    "error"
-                );
-
-                button.disabled =
-                    false;
-            }}
-        );
-
-        razorpay.open();
-
-    }} catch (error) {{
-
-        console.error(error);
-
-        setStatus(
-            "Unable to start payment.",
-            "error"
-        );
-
-        button.disabled =
-            false;
-    }}
-}}
-
-</script>
-
-</body>
-</html>
-"""
-
-    return HTMLResponse(
-        checkout_html
-    )
-
-
-# ============================================================
-# RAZORPAY VERIFY ENDPOINT
-# ============================================================
-
-@app.post("/payment/verify")
-async def verify_payment(
-    request: Request,
-):
-    try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse(
-            {
-                "success": False,
-                "error": "Invalid JSON.",
-            },
-            status_code=400,
-        )
-
-    user_id = payload.get(
-        "user_id",
-        "demo-user",
-    )
-
-    razorpay_order_id = payload.get(
-        "razorpay_order_id"
-    )
-
-    razorpay_payment_id = payload.get(
-        "razorpay_payment_id"
-    )
-
-    razorpay_signature = payload.get(
-        "razorpay_signature"
-    )
-
-    if not all(
-        [
-            razorpay_order_id,
-            razorpay_payment_id,
-            razorpay_signature,
-        ]
-    ):
-        return JSONResponse(
-            {
-                "success": False,
-                "error": (
-                    "Missing Razorpay payment fields."
-                ),
-            },
-            status_code=400,
-        )
-
-    payment = PAYMENTS.get(
-        razorpay_order_id
-    )
-
-    if payment is None:
-        return JSONResponse(
-            {
-                "success": False,
-                "error": (
-                    "Payment attempt not found."
-                ),
-            },
-            status_code=404,
-        )
-
-    if payment["user_id"] != user_id:
-        return JSONResponse(
-            {
-                "success": False,
-                "error": "User mismatch.",
-            },
-            status_code=403,
-        )
-
-    if payment["status"] in {
-        "PAID",
-        "ORDER_CREATED",
-    }:
-        return {
-            "success": True,
-            "status": payment["status"],
-            "message": "Payment already verified.",
+    events = await audit_collection.find(
+        {
+            "agent_id": DEFAULT_AGENT_ID,
         }
-
-    valid = verify_razorpay_signature(
-        razorpay_order_id,
-        razorpay_payment_id,
-        razorpay_signature,
+    ).sort(
+        "timestamp",
+        -1,
+    ).limit(
+        max(1, min(limit, 100))
+    ).to_list(
+        length=None
     )
 
-    if not valid:
-        payment["status"] = "VERIFICATION_FAILED"
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": (
-                    "Razorpay signature verification failed."
-                ),
-            },
-            status_code=400,
-        )
-
-    payment["status"] = "PAID"
-    payment["payment_id"] = razorpay_payment_id
-    payment["signature"] = razorpay_signature
-
     return {
-        "success": True,
-        "status": "PAID",
-        "message": (
-            "Payment verified successfully."
-        ),
-        "razorpay_order_id": razorpay_order_id,
-        "razorpay_payment_id": razorpay_payment_id,
+        "count": len(events),
+        "events": [
+            json_safe(event)
+            for event in events
+        ],
     }
+
+
+# ============================================================
+# AUTONOMOUS TEST ENDPOINT
+#
+# This lets you test the exact agent workflow from a browser
+# before asking ChatGPT to call it.
+# ============================================================
+
+@app.post("/test/autonomous-purchase")
+async def test_autonomous_purchase(
+    payload: dict[str, Any],
+):
+
+    items = payload.get(
+        "items",
+        [
+            {
+                "product_id": "p005",
+                "quantity": 20,
+            }
+        ],
+    )
+
+    intent = payload.get(
+        "intent",
+        "Test autonomous grocery purchase",
+    )
+
+    return await execute_autonomous_purchase(
+        agent_id=DEFAULT_AGENT_ID,
+        user_id=DEFAULT_USER_ID,
+        items=items,
+        intent=intent,
+    )
+
+
+# ============================================================
+# MCP TRANSPORT SECURITY
+# ============================================================
+
+transport_security = (
+    TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[
+            PUBLIC_HOST,
+            f"{PUBLIC_HOST}:443",
+        ],
+        allowed_origins=[
+            "https://chatgpt.com",
+            "https://chat.openai.com",
+        ],
+    )
+)
 
 
 # ============================================================
 # MCP STREAMABLE HTTP
 # ============================================================
-
-transport_security = TransportSecuritySettings(
-    enable_dns_rebinding_protection=True,
-    allowed_hosts=[
-        PUBLIC_HOST,
-        f"{PUBLIC_HOST}:443",
-    ],
-    allowed_origins=[
-        "https://chatgpt.com",
-        "https://chat.openai.com",
-    ],
-)
-
 
 mcp_http_app = mcp.streamable_http_app(
     streamable_http_path="/",
@@ -1560,10 +2621,11 @@ app.mount(
 
 
 # ============================================================
-# LOCAL START
+# LOCAL ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
+
     import uvicorn
 
     uvicorn.run(

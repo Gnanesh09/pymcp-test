@@ -1,384 +1,399 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <meta charset="UTF-8">
-
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1"
-  >
-
-  <title>QuickCart</title>
-
-  <style>
-    :root {
-      --bg: #ffffff;
-      --card: #ffffff;
-      --text: #111111;
-      --muted: #707070;
-      --border: #e8e8e8;
-      --soft: #f6f6f6;
-      --button: #111111;
-      --button-text: #ffffff;
-      --green: #12804c;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      padding: 14px;
-
-      background: var(--bg);
-      color: var(--text);
-
-      font-family:
-        -apple-system,
-        BlinkMacSystemFont,
-        "Inter",
-        "Segoe UI",
-        sans-serif;
-    }
-
-    .header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-
-      margin-bottom: 12px;
-    }
-
-    .title {
-      font-size: 17px;
-      font-weight: 750;
-    }
-
-    .count {
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .products {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .product {
-      display: grid;
-      grid-template-columns:
-        72px minmax(0, 1fr) auto;
-
-      gap: 11px;
-      align-items: center;
-
-      padding: 8px;
-
-      border: 1px solid var(--border);
-      border-radius: 14px;
-
-      background: var(--card);
-    }
-
-    .image {
-      width: 72px;
-      height: 72px;
-
-      overflow: hidden;
-      border-radius: 11px;
-
-      background: var(--soft);
-    }
-
-    .image img {
-      width: 100%;
-      height: 100%;
-
-      object-fit: cover;
-      display: block;
-    }
-
-    .details {
-      min-width: 0;
-    }
+<meta charset="UTF-8">
+
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1"
+/>
+
+<title>QuickCart</title>
+
+<style>
+
+:root {
+  --bg: #fff;
+  --card: #fff;
+  --text: #111;
+  --muted: #707070;
+  --border: #e8e8e8;
+  --soft: #f6f6f6;
+  --green: #087443;
+  --red: #b42318;
+  --button: #111;
+  --buttonText: #fff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 14px;
+
+  background: var(--bg);
+  color: var(--text);
+
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Inter",
+    "Segoe UI",
+    sans-serif;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.title {
+  font-size: 17px;
+  font-weight: 750;
+}
+
+.count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.agent {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+
+  margin-bottom: 12px;
+
+  border-radius: 13px;
+  background: var(--soft);
+  border: 1px solid var(--border);
+}
+
+.agent-icon {
+  font-size: 22px;
+}
+
+.agent-info {
+  min-width: 0;
+}
+
+.agent-name {
+  font-weight: 750;
+  font-size: 13px;
+}
+
+.agent-status {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--green);
+}
+
+.agent-spend {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.products {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 
-    .name {
-      font-size: 14px;
-      line-height: 1.25;
-      font-weight: 700;
-    }
+.product {
+  display: grid;
 
-    .brand {
-      margin-top: 2px;
+  grid-template-columns:
+    72px minmax(0, 1fr) auto;
 
-      color: var(--muted);
-      font-size: 11px;
-    }
+  gap: 11px;
 
-    .meta {
-      display: flex;
-      flex-wrap: wrap;
+  padding: 8px;
 
-      gap: 7px;
-      margin-top: 5px;
+  align-items: center;
 
-      color: var(--muted);
-      font-size: 11px;
-    }
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
 
-    .rating {
-      color: #d09500;
-      font-weight: 700;
-    }
+.image {
+  width: 72px;
+  height: 72px;
 
-    .pricing {
-      display: flex;
-      align-items: center;
+  overflow: hidden;
+  border-radius: 11px;
 
-      gap: 6px;
-      margin-top: 5px;
-    }
+  background: var(--soft);
+}
 
-    .price {
-      font-size: 15px;
-      font-weight: 800;
-    }
+.image img {
+  width: 100%;
+  height: 100%;
 
-    .mrp {
-      font-size: 11px;
-      color: var(--muted);
+  object-fit: cover;
+}
 
-      text-decoration: line-through;
-    }
+.details {
+  min-width: 0;
+}
 
-    .discount {
-      color: var(--green);
-      font-size: 10px;
-      font-weight: 700;
-    }
+.name {
+  font-size: 14px;
+  font-weight: 700;
+}
 
-    button {
-      border: 0;
-      cursor: pointer;
-      font: inherit;
-    }
+.brand {
+  color: var(--muted);
+  font-size: 11px;
+}
 
-    .add {
-      padding: 8px 12px;
+.meta {
+  display: flex;
+  gap: 7px;
 
-      border-radius: 9px;
+  margin-top: 5px;
 
-      background: var(--button);
-      color: var(--button-text);
+  color: var(--muted);
+  font-size: 11px;
+}
 
-      font-size: 12px;
-      font-weight: 700;
-    }
+.rating {
+  color: #d09500;
+  font-weight: 700;
+}
 
-    .add:disabled {
-      opacity: .5;
-      cursor: default;
-    }
+.price {
+  margin-top: 5px;
+  font-weight: 800;
+  font-size: 15px;
+}
 
-    .cart {
-      margin-top: 14px;
+.add {
+  border: 0;
+  border-radius: 9px;
 
-      padding: 14px;
+  padding: 8px 12px;
 
-      border: 1px solid var(--border);
-      border-radius: 16px;
+  background: var(--button);
+  color: var(--buttonText);
 
-      background: var(--soft);
-    }
+  font-size: 12px;
+  font-weight: 700;
 
-    .cart-title {
-      font-size: 14px;
-      font-weight: 750;
-    }
+  cursor: pointer;
+}
 
-    .summary-row {
-      display: flex;
-      justify-content: space-between;
+.add:disabled {
+  opacity: .5;
+}
 
-      margin-top: 7px;
+.panel {
+  margin-top: 12px;
 
-      color: var(--muted);
-      font-size: 12px;
-    }
+  padding: 13px;
 
-    .total-row {
-      display: flex;
-      justify-content: space-between;
+  border: 1px solid var(--border);
+  border-radius: 14px;
 
-      margin-top: 9px;
+  background: var(--soft);
+}
 
-      font-size: 16px;
-      font-weight: 800;
-    }
+.panel-title {
+  font-size: 13px;
+  font-weight: 750;
+}
 
-    .pay {
-      width: 100%;
+.row {
+  display: flex;
+  justify-content: space-between;
 
-      margin-top: 12px;
-      padding: 11px;
+  margin-top: 6px;
 
-      border-radius: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
 
-      background: #111;
-      color: white;
+.total {
+  color: var(--text);
+  font-weight: 800;
+}
 
-      font-size: 13px;
-      font-weight: 750;
-    }
+.badge {
+  display: inline-block;
 
-    .pay:disabled {
-      opacity: .5;
-      cursor: default;
-    }
+  margin-top: 8px;
 
-    .empty {
-      padding: 28px;
+  padding: 4px 8px;
 
-      color: var(--muted);
+  border-radius: 999px;
 
-      text-align: center;
-      font-size: 13px;
-    }
+  font-size: 10px;
+  font-weight: 700;
 
-    .toast {
-      position: fixed;
+  background: #dff6e8;
+  color: var(--green);
+}
 
-      left: 50%;
-      bottom: 12px;
+.blocked {
+  background: #fde8e7;
+  color: var(--red);
+}
 
-      transform: translateX(-50%);
+.empty {
+  padding: 28px;
 
-      padding: 8px 13px;
+  text-align: center;
 
-      border-radius: 999px;
+  color: var(--muted);
 
-      background: #111;
-      color: white;
+  font-size: 13px;
+}
 
-      font-size: 12px;
-      font-weight: 650;
+.toast {
+  position: fixed;
 
-      opacity: 0;
-      pointer-events: none;
+  left: 50%;
+  bottom: 12px;
 
-      transition: opacity .15s ease;
-    }
+  transform: translateX(-50%);
 
-    .toast.visible {
-      opacity: 1;
-    }
-  </style>
+  padding: 8px 13px;
+
+  border-radius: 999px;
+
+  background: #111;
+  color: #fff;
+
+  font-size: 12px;
+
+  opacity: 0;
+
+  pointer-events: none;
+
+  transition: opacity .15s ease;
+}
+
+.toast.visible {
+  opacity: 1;
+}
+
+</style>
 </head>
 
 <body>
 
-  <div class="header">
-    <div
-      id="title"
-      class="title"
-    >
-      QuickCart
-    </div>
-
-    <div
-      id="count"
-      class="count"
-    >
-      0 products
-    </div>
-  </div>
+<div class="header">
 
   <div
-    id="products"
-    class="products"
-  ></div>
-
-  <div
-    id="cart"
-    class="cart"
-    style="display:none"
+    id="title"
+    class="title"
   >
-    <div class="cart-title">
-      Your Cart
-    </div>
-
-    <div
-      id="cartItems"
-    ></div>
-
-    <div class="summary-row">
-      <span>Subtotal</span>
-      <span id="subtotal">
-        ₹0
-      </span>
-    </div>
-
-    <div class="summary-row">
-      <span>Delivery</span>
-      <span id="delivery">
-        ₹0
-      </span>
-    </div>
-
-    <div class="total-row">
-      <span>Total</span>
-      <span id="total">
-        ₹0
-      </span>
-    </div>
-
-    <button
-      id="payButton"
-      class="pay"
-      disabled
-    >
-      Pay ₹0
-    </button>
+    QuickCart
   </div>
 
   <div
-    id="toast"
-    class="toast"
-  ></div>
+    id="count"
+    class="count"
+  >
+    0 products
+  </div>
+
+</div>
+
+
+<div
+  class="agent"
+>
+
+  <div class="agent-icon">
+    🤖
+  </div>
+
+  <div class="agent-info">
+
+    <div class="agent-name">
+      Grocery Autopilot
+    </div>
+
+    <div class="agent-status">
+      ● Autonomous purchasing ON
+    </div>
+
+    <div
+      id="agentSpend"
+      class="agent-spend"
+    >
+      Daily limit ₹50,000
+    </div>
+
+  </div>
+
+</div>
+
+
+<div
+  id="products"
+  class="products"
+></div>
+
+
+<div
+  id="result"
+  class="panel"
+  style="display:none"
+></div>
+
+
+<div
+  id="toast"
+  class="toast"
+></div>
 
 
 <script>
 
-function output() {
-  return window.openai?.toolOutput || {};
+function toolOutput() {
+  return (
+    window.openai?.toolOutput || {}
+  );
 }
 
 
-function products() {
-  const value = output().products;
-
-  return Array.isArray(value)
-    ? value
-    : [];
-}
-
-
-function escapeHtml(value) {
+function escapeHtml(
+  value
+) {
   return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+    .replaceAll(
+      "&",
+      "&amp;"
+    )
+    .replaceAll(
+      "<",
+      "&lt;"
+    )
+    .replaceAll(
+      ">",
+      "&gt;"
+    )
+    .replaceAll(
+      '"',
+      "&quot;"
+    )
+    .replaceAll(
+      "'",
+      "&#039;"
+    );
 }
 
 
-let toastTimer;
-
-
-function showToast(message) {
+function toast(
+  message
+) {
 
   const element =
     document.getElementById(
@@ -392,288 +407,109 @@ function showToast(message) {
     "visible"
   );
 
-  clearTimeout(
-    toastTimer
+  setTimeout(
+    () => {
+      element.classList.remove(
+        "visible"
+      );
+    },
+    1800
   );
-
-  toastTimer =
-    setTimeout(
-      () => {
-        element.classList.remove(
-          "visible"
-        );
-      },
-      1800
-    );
 }
 
 
-async function addToCart(productId) {
+async function addToCart(
+  productId
+) {
+
+  const result =
+    await window.openai.callTool(
+      "add_to_cart",
+      {
+        product_id: productId,
+        quantity: 1,
+        user_id: "demo-user"
+      }
+    );
 
   if (
-    !window.openai ||
-    typeof window.openai.callTool !==
-      "function"
+    result?.success === false
   ) {
-    showToast(
-      "Tool bridge unavailable"
+
+    toast(
+      result.error ||
+      "Could not add product"
     );
 
     return;
   }
 
+  toast(
+    "Added to cart"
+  );
+}
+
+
+async function showAgent() {
+
   try {
 
     const result =
       await window.openai.callTool(
-        "add_to_cart",
+        "get_agent_policy",
         {
-          product_id: productId,
-          quantity: 1
+          agent_id:
+            "agent_demo_grocery"
         }
       );
 
-    if (
-      result?.isError ||
-      result?.success === false
-    ) {
-      showToast(
-        result?.error ||
-        "Could not add item"
-      );
+    const data =
+      result?.agent ||
+      result?.structuredContent?.agent;
 
+    const policy =
+      result?.policy ||
+      result?.structuredContent?.policy;
+
+    const spend =
+      result?.spend_today ??
+      result?.structuredContent?.spend_today ??
+      0;
+
+    if (!policy) {
       return;
     }
 
-    showToast(
-      "Added to cart"
-    );
-
-    await refreshCart();
-
-  } catch (error) {
-
-    console.error(error);
-
-    showToast(
-      "Could not add item"
-    );
-  }
-}
-
-
-async function refreshCart() {
-
-  if (
-    !window.openai ||
-    typeof window.openai.callTool !==
-      "function"
-  ) {
-    return;
-  }
-
-  try {
-
-    const result =
-      await window.openai.callTool(
-        "get_cart",
-        {
-          user_id: "demo-user"
-        }
-      );
-
-    const cart =
-      result?.cart ||
-      result?.structuredContent?.cart ||
-      result?.content?.cart;
-
-    if (cart) {
-      renderCart(cart);
-    }
+    document.getElementById(
+      "agentSpend"
+    ).textContent =
+      `₹${spend} spent / ₹${policy.daily_limit} today`;
 
   } catch (error) {
 
     console.error(
-      "Cart error:",
+      "Agent UI:",
       error
     );
   }
 }
 
 
-function renderCart(cart) {
+function render() {
 
-  const container =
-    document.getElementById(
-      "cart"
-    );
-
-  container.style.display =
-    cart?.items?.length
-      ? "block"
-      : "none";
-
-  if (!cart?.items?.length) {
-    return;
-  }
-
-  document.getElementById(
-    "cartItems"
-  ).innerHTML =
-    cart.items.map(
-      item => `
-        <div
-          style="
-            display:flex;
-            justify-content:space-between;
-            margin-top:7px;
-            font-size:12px;
-          "
-        >
-          <span>
-            ${escapeHtml(item.name)}
-            × ${item.quantity}
-          </span>
-
-          <span>
-            ₹${item.line_total}
-          </span>
-        </div>
-      `
-    ).join("");
-
-
-  document.getElementById(
-    "subtotal"
-  ).textContent =
-    `₹${cart.subtotal}`;
-
-
-  document.getElementById(
-    "delivery"
-  ).textContent =
-    `₹${cart.delivery_fee}`;
-
-
-  document.getElementById(
-    "total"
-  ).textContent =
-    `₹${cart.total}`;
-
-
-  const payButton =
-    document.getElementById(
-      "payButton"
-    );
-
-  payButton.disabled =
-    cart.total <= 0;
-
-  payButton.textContent =
-    `Pay ₹${cart.total}`;
-
-  payButton.onclick =
-    createPayment;
-}
-
-
-async function createPayment() {
-
-  const button =
-    document.getElementById(
-      "payButton"
-    );
-
-  button.disabled =
-    true;
-
-  button.textContent =
-    "Preparing payment...";
-
-  try {
-
-    const result =
-      await window.openai.callTool(
-        "create_payment_order",
-        {
-          user_id: "demo-user"
-        }
-      );
-
-    if (
-      result?.isError ||
-      result?.success === false
-    ) {
-
-      throw new Error(
-        result?.error ||
-        "Could not create payment"
-      );
-    }
-
-    const data =
-      result?.structuredContent ||
-      result;
-
-    const paymentUrl =
-      data.payment_url;
-
-    if (!paymentUrl) {
-
-      throw new Error(
-        "Payment URL was not returned."
-      );
-    }
-
-    // Apps SDK host helper.
-    if (
-      typeof window.openai?.openExternal ===
-      "function"
-    ) {
-
-      await window.openai.openExternal({
-        href: paymentUrl
-      });
-
-    } else {
-
-      window.open(
-        paymentUrl,
-        "_blank"
-      );
-    }
-
-    button.disabled =
-      false;
-
-    button.textContent =
-      "Pay";
-
-  } catch (error) {
-
-    console.error(
-      error
-    );
-
-    showToast(
-      error.message ||
-      "Payment could not be started."
-    );
-
-    button.disabled =
-      false;
-  }
-}
-
-
-function renderProducts() {
+  const output =
+    toolOutput();
 
   const list =
-    products();
+    Array.isArray(
+      output.products
+    )
+      ? output.products
+      : [];
 
   const title =
-    output().title ||
-    output().query ||
+    output.title ||
+    output.query ||
     "QuickCart";
 
 
@@ -701,11 +537,10 @@ function renderProducts() {
 
   if (!list.length) {
 
-    container.innerHTML = `
-      <div class="empty">
-        No products found.
-      </div>
-    `;
+    container.innerHTML =
+      `<div class="empty">
+         No products found.
+       </div>`;
 
     return;
   }
@@ -713,148 +548,103 @@ function renderProducts() {
 
   container.innerHTML =
     list.map(
-      product => {
+      product => `
 
-        const id =
-          escapeHtml(product.id);
+      <div class="product">
 
-        const name =
-          escapeHtml(product.name);
+        <div class="image">
 
-        const brand =
-          escapeHtml(product.brand);
+          <img
+            src="${escapeHtml(product.image)}"
+            alt="${escapeHtml(product.name)}"
+          >
 
-        const image =
-          escapeHtml(product.image);
+        </div>
 
-        return `
-          <div class="product">
 
-            <div class="image">
-              <img
-                src="${image}"
-                alt="${name}"
-              />
-            </div>
+        <div class="details">
 
-            <div class="details">
+          <div class="name">
+            ${escapeHtml(product.name)}
+          </div>
 
-              <div class="name">
-                ${name}
-              </div>
+          <div class="brand">
+            ${escapeHtml(product.brand)}
+          </div>
 
-              <div class="brand">
-                ${brand}
-              </div>
+          <div class="meta">
 
-              <div class="meta">
+            <span class="rating">
+              ★ ${product.rating}
+            </span>
 
-                <span class="rating">
-                  ★ ${product.rating}
-                </span>
+            <span>
+              ${escapeHtml(product.unit)}
+            </span>
 
-                <span>
-                  ${escapeHtml(product.unit)}
-                </span>
-
-                <span>
-                  ${
-                    Number(product.stock) > 0
-                      ? "In stock"
-                      : "Out of stock"
-                  }
-                </span>
-
-              </div>
-
-              <div class="pricing">
-
-                <span class="price">
-                  ₹${product.price}
-                </span>
-
-                ${
-                  product.mrp >
-                  product.price
-                    ? `
-                      <span class="mrp">
-                        ₹${product.mrp}
-                      </span>
-                    `
-                    : ""
-                }
-
-                ${
-                  Number(product.discount) > 0
-                    ? `
-                      <span class="discount">
-                        ${product.discount}% OFF
-                      </span>
-                    `
-                    : ""
-                }
-
-              </div>
-
-            </div>
-
-            <button
-              class="add"
-              data-id="${id}"
-              ${
-                Number(product.stock) <= 0
-                  ? "disabled"
-                  : ""
-              }
-            >
+            <span>
               ${
                 Number(product.stock) > 0
-                  ? "Add"
-                  : "Sold out"
+                  ? "In stock"
+                  : "Out"
               }
-            </button>
+            </span>
 
           </div>
-        `;
-      }
+
+          <div class="price">
+            ₹${product.price}
+          </div>
+
+        </div>
+
+
+        <button
+          class="add"
+          data-id="${escapeHtml(product.id)}"
+          ${
+            Number(product.stock) <= 0
+              ? "disabled"
+              : ""
+          }
+        >
+          Add
+        </button>
+
+      </div>
+
+    `
     ).join("");
 
 
   container
     .querySelectorAll(".add")
-    .forEach(button => {
+    .forEach(
+      button => {
 
-      button.addEventListener(
-        "click",
-        () => {
+        button.onclick =
+          () => {
 
-          const id =
-            button.dataset.id;
+            addToCart(
+              button.dataset.id
+            );
 
-          if (id) {
-            addToCart(id);
-          }
+          };
 
-        }
-      );
-
-    });
+      }
+    );
 }
 
 
-renderProducts();
-
-refreshCart();
+render();
+showAgent();
 
 
 window.addEventListener(
   "openai:set_globals",
   () => {
-
-    renderProducts();
-
-    refreshCart();
-
+    render();
+    showAgent();
   }
 );
 
