@@ -65,10 +65,11 @@ export default function HomePage() {
             </div>
 
             <div className="topbar-actions">
-              <a className="icon-link" href="/agents">
-                <Bot size={18} />
-                Agents
-              </a>
+              <a className="icon-link" href="/">Store</a>
+              <a className="icon-link" href="/cart">Cart</a>
+              <a className="icon-link" href="/orders">Orders</a>
+              <a className="icon-link" href="/activity">Activity</a>
+              <a className="icon-link" href="/agents"><Bot size={18} /> Agents</a>
               <UserButton />
             </div>
           </header>

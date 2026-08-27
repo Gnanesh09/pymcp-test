@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
+import { useMemo } from "react";
 
 const baseUrl =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api";
@@ -54,7 +55,7 @@ export function useUmonApi() {
     });
   }
 
-  return {
+  return useMemo(() => ({
     me: () => authRequest<any>("/me"),
 
     agents: () => authRequest<any>("/agents"),
@@ -69,73 +70,62 @@ export function useUmonApi() {
       }),
 
     updatePolicy: (id: string, body: any) =>
-      authRequest<any>(
-        `/agents/${encodeURIComponent(id)}/policy`,
-        {
-          method: "PATCH",
-          body: JSON.stringify(body),
-        },
-      ),
+      authRequest<any>(`/agents/${encodeURIComponent(id)}/policy`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
 
     balance: (id: string) =>
-      authRequest<any>(
-        `/agents/${encodeURIComponent(id)}/balance`,
-      ),
+      authRequest<any>(`/agents/${encodeURIComponent(id)}/balance`),
 
     createFundingOrder: (id: string, amount: number) =>
-      authRequest<any>(
-        `/agents/${encodeURIComponent(id)}/funding-order`,
-        {
-          method: "POST",
-          body: JSON.stringify({ amount }),
-        },
-      ),
+      authRequest<any>(`/agents/${encodeURIComponent(id)}/funding-order`, {
+        method: "POST",
+        body: JSON.stringify({ amount }),
+      }),
 
     verifyFunding: (id: string, body: any) =>
-      authRequest<any>(
-        `/agents/${encodeURIComponent(id)}/funding/verify`,
-        {
-          method: "POST",
-          body: JSON.stringify(body),
-        },
-      ),
+      authRequest<any>(`/agents/${encodeURIComponent(id)}/funding/verify`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
 
-    addToCart: (
-      agentId: string,
-      productId: string,
-      quantity: number,
-    ) =>
-      authRequest<any>(
-        `/cart/items?agent_id=${encodeURIComponent(agentId)}`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            product_id: productId,
-            quantity,
-          }),
-        },
-      ),
+    addToCart: (agentId: string, productId: string, quantity: number) =>
+      authRequest<any>(`/cart/items?agent_id=${encodeURIComponent(agentId)}`, {
+        method: "POST",
+        body: JSON.stringify({ product_id: productId, quantity }),
+      }),
 
     cart: (agentId: string) =>
-      authRequest<any>(
-        `/cart?agent_id=${encodeURIComponent(agentId)}`,
-      ),
+      authRequest<any>(`/cart?agent_id=${encodeURIComponent(agentId)}`),
 
-    checkoutWithAgentBalance: (agentId: string) =>
+    updateCartItem: (agentId: string, productId: string, quantity: number) =>
+      authRequest<any>(`/cart/items/${encodeURIComponent(productId)}?agent_id=${encodeURIComponent(agentId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ product_id: productId, quantity }),
+      }),
+
+    removeCartItem: (agentId: string, productId: string) =>
+      authRequest<any>(`/cart/items/${encodeURIComponent(productId)}?agent_id=${encodeURIComponent(agentId)}`, {
+        method: "DELETE",
+      }),
+
+    clearCart: (agentId: string) =>
+      authRequest<any>(`/cart/clear?agent_id=${encodeURIComponent(agentId)}`, {
+        method: "POST",
+      }),
+
+    checkoutWithAgentBalance: (agentId: string, confirmed = false) =>
       authRequest<any>("/checkout/agent-balance", {
         method: "POST",
-        body: JSON.stringify({ agent_id: agentId }),
+        body: JSON.stringify({ agent_id: agentId, confirmed }),
       }),
 
     orders: () => authRequest<any>("/orders"),
+    order: (id: string) => authRequest<any>(`/orders/${encodeURIComponent(id)}`),
+    audit: (agentId?: string) => authRequest<any>(agentId ? `/audit?agent_id=${encodeURIComponent(agentId)}` : "/audit"),
+  }), [getToken]);
 
-    audit: (agentId?: string) =>
-      authRequest<any>(
-        agentId
-          ? `/audit?agent_id=${encodeURIComponent(agentId)}`
-          : "/audit",
-      ),
-  };
 }
 
 export async function searchProducts(query = "") {

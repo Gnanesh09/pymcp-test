@@ -13,6 +13,10 @@ from .services import (
     audit,
     build_cart,
     checkout_with_agent_balance,
+    clear_cart,
+    get_cart,
+    remove_cart_item,
+    update_cart_item,
     create_agent,
     create_agent_funding_order,
     get_owned_agent,
@@ -61,6 +65,7 @@ class AddCartItem(BaseModel):
 
 class CheckoutRequest(BaseModel):
     agent_id: str
+    confirmed: bool = False
 
 
 @router.get("/health")
@@ -313,23 +318,17 @@ async def product_recommendations(product_id: str):
 
 
 @router.get("/cart")
-async def get_cart(
+async def get_cart_route(
     agent_id: str,
     user=Depends(get_current_user),
 ):
-    await get_owned_agent(
-        user["clerk_user_id"],
-        agent_id,
-    ) or (_ for _ in ()).throw(
-        HTTPException(404, "Agent not found.")
-    )
-
-    cart = await build_cart(
-        user["clerk_user_id"],
-        agent_id,
-    )
-
-    return {"success": True, "cart": cart}
+    agent = await get_owned_agent(user["clerk_user_id"], agent_id)
+    if not agent:
+        raise HTTPException(404, "Agent not found.")
+    return {"success": True, "cart": await get_cart(
+        owner_clerk_user_id=user["clerk_user_id"],
+        agent_id=agent_id,
+    )}
 
 
 @router.post("/cart/items")
@@ -345,21 +344,79 @@ async def cart_add(
             product_id=body.product_id,
             quantity=body.quantity,
         )
-
         await audit(
             owner_clerk_user_id=user["clerk_user_id"],
             action="CART_ITEM_ADDED",
             result="SUCCESS",
             agent_id=agent_id,
-            metadata={
-                "product_id": body.product_id,
-                "quantity": body.quantity,
-            },
+            metadata={"product_id": body.product_id, "quantity": body.quantity},
         )
-
         return {"success": True, "cart": cart}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.patch("/cart/items/{product_id}")
+async def cart_update(
+    product_id: str,
+    body: AddCartItem,
+    agent_id: str,
+    user=Depends(get_current_user),
+):
+    if body.product_id != product_id:
+        raise HTTPException(400, "Product ID mismatch.")
+    try:
+        cart = await update_cart_item(
+            owner_clerk_user_id=user["clerk_user_id"],
+            agent_id=agent_id,
+            product_id=product_id,
+            quantity=body.quantity,
+        )
+        return {"success": True, "cart": cart}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.delete("/cart/items/{product_id}")
+async def cart_remove(
+    product_id: str,
+    agent_id: str,
+    user=Depends(get_current_user),
+):
+    try:
+        cart = await remove_cart_item(
+            owner_clerk_user_id=user["clerk_user_id"],
+            agent_id=agent_id,
+            product_id=product_id,
+        )
+        await audit(
+            owner_clerk_user_id=user["clerk_user_id"],
+            action="CART_ITEM_REMOVED",
+            result="SUCCESS",
+            agent_id=agent_id,
+            metadata={"product_id": product_id},
+        )
+        return {"success": True, "cart": cart}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/cart/clear")
+async def cart_clear(
+    agent_id: str,
+    user=Depends(get_current_user),
+):
+    cart = await clear_cart(
+        owner_clerk_user_id=user["clerk_user_id"],
+        agent_id=agent_id,
+    )
+    await audit(
+        owner_clerk_user_id=user["clerk_user_id"],
+        action="CART_CLEARED",
+        result="SUCCESS",
+        agent_id=agent_id,
+    )
+    return {"success": True, "cart": cart}
 
 
 @router.post("/checkout/agent-balance")
@@ -371,6 +428,7 @@ async def checkout_agent_balance(
         return await checkout_with_agent_balance(
             owner_clerk_user_id=user["clerk_user_id"],
             agent_id=body.agent_id,
+            confirmed=body.confirmed,
         )
     except (ValueError, HTTPException) as exc:
         if isinstance(exc, HTTPException):
@@ -399,6 +457,35 @@ async def list_orders(user=Depends(get_current_user)):
             }
             for x in orders
         ],
+    }
+
+
+@router.get("/orders/{order_id}")
+async def order_detail(
+    order_id: str,
+    user=Depends(get_current_user),
+):
+    db = get_db()
+    order = await db.orders.find_one({
+        "_id": order_id,
+        "owner_clerk_user_id": user["clerk_user_id"],
+    })
+    if not order:
+        raise HTTPException(404, "Order not found.")
+    return {
+        "success": True,
+        "order": {
+            "id": order["_id"],
+            "status": order["status"],
+            "payment_status": order["payment_status"],
+            "payment_method": order.get("payment_method"),
+            "amount_paise": order["amount_paise"],
+            "amount": round(order["amount_paise"] / 100, 2),
+            "currency": order.get("currency", "INR"),
+            "items": order["items"],
+            "created_at": order["created_at"],
+            "updated_at": order.get("updated_at"),
+        },
     }
 
 

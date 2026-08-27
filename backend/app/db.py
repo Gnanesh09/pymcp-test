@@ -82,7 +82,6 @@ async def init_indexes() -> None:
         ]
     )
 
-
 async def seed_demo_merchant_and_products() -> None:
     assert db is not None
 
@@ -281,24 +280,31 @@ async def seed_demo_merchant_and_products() -> None:
             {"$setOnInsert": product},
             upsert=True,
         )
+
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(
+    app: FastAPI,
+) -> AsyncGenerator[None, None]:
     global client, db
 
     client = AsyncMongoClient(
         settings.mongodb_uri
     )
 
-    db = client[settings.mongodb_db]
+    db = client[
+        settings.mongodb_db
+    ]
 
     # Verify MongoDB connection.
     await db.command("ping")
 
+    # Create indexes and seed the demo merchant/catalog.
     await init_indexes()
     await seed_demo_merchant_and_products()
 
     try:
         yield
+
     finally:
         await client.close()
 

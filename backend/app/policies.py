@@ -12,6 +12,7 @@ async def evaluate_purchase(
     amount_paise: int,
     categories: list[str],
     merchant: dict[str, Any],
+    confirmed: bool = False,
 ) -> dict[str, Any]:
     if agent.get("status") != "ACTIVE":
         return {
@@ -22,11 +23,11 @@ async def evaluate_purchase(
 
     policy = agent.get("policy", {})
 
-    if not policy.get("auto_purchase", False):
+    if not policy.get("auto_purchase", False) and not confirmed:
         return {
             "decision": "CONFIRM",
             "code": "USER_CONFIRMATION_REQUIRED",
-            "reason": "This agent requires confirmation before purchase.",
+            "reason": "This agent requires explicit confirmation before purchase.",
         }
 
     max_txn = int(policy.get("max_transaction_paise", 0))

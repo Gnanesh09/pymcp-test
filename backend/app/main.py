@@ -5,6 +5,7 @@ from .config import settings
 from .db import lifespan
 from .routes import router
 
+
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",

@@ -315,6 +315,111 @@ async def add_to_cart(
     return cart
 
 
+
+async def get_cart(
+    *,
+    owner_clerk_user_id: str,
+    agent_id: str,
+) -> dict[str, Any]:
+    cart = await build_cart(owner_clerk_user_id, agent_id)
+    return cart
+
+
+async def update_cart_item(
+    *,
+    owner_clerk_user_id: str,
+    agent_id: str,
+    product_id: str,
+    quantity: int,
+) -> dict[str, Any]:
+    if quantity < 1:
+        raise ValueError("Quantity must be at least 1.")
+
+    db = get_db()
+    cart = await build_cart(owner_clerk_user_id, agent_id)
+
+    target = next(
+        (x for x in cart.get("items", []) if x["product_id"] == product_id),
+        None,
+    )
+    if not target:
+        raise ValueError("Product is not in the cart.")
+
+    product = await db.products.find_one({
+        "_id": product_id,
+        "merchant_id": settings.merchant_id,
+        "active": True,
+    })
+    if not product:
+        raise ValueError("Product is no longer available.")
+    if int(product["stock"]) < quantity:
+        raise ValueError(
+            f"Only {product['stock']} units of {product['name']} are available."
+        )
+
+    target["quantity"] = quantity
+    target["unit_price_paise"] = int(product["price_paise"])
+    target["line_total_paise"] = quantity * int(product["price_paise"])
+    target["name"] = product["name"]
+    target["category"] = product["category"]
+    target["image"] = product["image"]
+
+    subtotal = sum(x["line_total_paise"] for x in cart["items"])
+    delivery = 3900 if 0 < subtotal < 49900 else 0
+    cart.update({
+        "subtotal_paise": subtotal,
+        "delivery_fee_paise": delivery,
+        "total_paise": subtotal + delivery,
+        "updated_at": utc_now(),
+    })
+    await db.carts.replace_one({"_id": cart["_id"]}, cart)
+    return cart
+
+
+async def remove_cart_item(
+    *,
+    owner_clerk_user_id: str,
+    agent_id: str,
+    product_id: str,
+) -> dict[str, Any]:
+    db = get_db()
+    cart = await build_cart(owner_clerk_user_id, agent_id)
+    original = len(cart.get("items", []))
+    items = [x for x in cart.get("items", []) if x["product_id"] != product_id]
+    if len(items) == original:
+        raise ValueError("Product is not in the cart.")
+
+    subtotal = sum(x["line_total_paise"] for x in items)
+    delivery = 3900 if 0 < subtotal < 49900 else 0
+    cart.update({
+        "items": items,
+        "subtotal_paise": subtotal,
+        "delivery_fee_paise": delivery,
+        "total_paise": subtotal + delivery,
+        "updated_at": utc_now(),
+    })
+    await db.carts.replace_one({"_id": cart["_id"]}, cart)
+    return cart
+
+
+async def clear_cart(
+    *,
+    owner_clerk_user_id: str,
+    agent_id: str,
+) -> dict[str, Any]:
+    db = get_db()
+    cart = await build_cart(owner_clerk_user_id, agent_id)
+    cart.update({
+        "items": [],
+        "subtotal_paise": 0,
+        "delivery_fee_paise": 0,
+        "total_paise": 0,
+        "updated_at": utc_now(),
+    })
+    await db.carts.replace_one({"_id": cart["_id"]}, cart)
+    return cart
+
+
 async def create_agent_funding_order(
     owner_clerk_user_id: str,
     agent_id: str,
@@ -518,6 +623,7 @@ async def verify_agent_funding(
 async def checkout_with_agent_balance(
     owner_clerk_user_id: str,
     agent_id: str,
+    confirmed: bool = False,
 ) -> dict[str, Any]:
     db = get_db()
 
@@ -588,6 +694,7 @@ async def checkout_with_agent_balance(
         amount_paise=total,
         categories=categories,
         merchant=merchant,
+        confirmed=confirmed,
     )
 
     await audit(
