@@ -28,15 +28,13 @@ async def daily_spend_paise(
         microsecond=0,
     )
 
-    # IMPORTANT:
-    # With the PyMongo async API you are using,
-    # aggregate() must be awaited first.
     cursor = await db.ledger_entries.aggregate(
         [
             {
                 "$match": {
                     "agent_id": agent_id,
-                    "owner_clerk_user_id": owner_clerk_user_id,
+                    "owner_clerk_user_id":
+                        owner_clerk_user_id,
                     "type": "DEBIT",
                     "created_at": {
                         "$gte": start,
@@ -47,7 +45,8 @@ async def daily_spend_paise(
                 "$group": {
                     "_id": None,
                     "total": {
-                        "$sum": "$amount_paise",
+                        "$sum":
+                            "$amount_paise",
                     },
                 }
             },
@@ -90,18 +89,20 @@ async def evaluate_purchase(
         return {
             "decision": "BLOCK",
             "code": "INVALID_AMOUNT",
-            "reason": "Purchase amount must be greater than zero.",
+            "reason":
+                "Purchase amount must be greater than zero.",
         }
 
     # --------------------------------------------------------
-    # Agent status
+    # Agent
     # --------------------------------------------------------
 
     if agent.get("status") != "ACTIVE":
         return {
             "decision": "BLOCK",
             "code": "AGENT_DISABLED",
-            "reason": "This purchasing agent is not active.",
+            "reason":
+                "This purchasing agent is not active.",
         }
 
     policy = agent.get(
@@ -110,7 +111,7 @@ async def evaluate_purchase(
     )
 
     # --------------------------------------------------------
-    # Confirmation gate
+    # Confirmation
     # --------------------------------------------------------
 
     auto_purchase = bool(
@@ -126,10 +127,10 @@ async def evaluate_purchase(
     ):
         return {
             "decision": "CONFIRM",
-            "code": "USER_CONFIRMATION_REQUIRED",
-            "reason": (
-                "This agent requires explicit confirmation before purchase."
-            ),
+            "code":
+                "USER_CONFIRMATION_REQUIRED",
+            "reason":
+                "This agent requires explicit confirmation before purchase.",
         }
 
     # --------------------------------------------------------
@@ -146,10 +147,10 @@ async def evaluate_purchase(
     if max_transaction_paise <= 0:
         return {
             "decision": "BLOCK",
-            "code": "TRANSACTION_LIMIT_NOT_CONFIGURED",
-            "reason": (
-                "The agent transaction limit is not configured."
-            ),
+            "code":
+                "TRANSACTION_LIMIT_NOT_CONFIGURED",
+            "reason":
+                "The agent transaction limit is not configured.",
         }
 
     if (
@@ -158,10 +159,13 @@ async def evaluate_purchase(
     ):
         return {
             "decision": "BLOCK",
-            "code": "TRANSACTION_LIMIT_EXCEEDED",
+            "code":
+                "TRANSACTION_LIMIT_EXCEEDED",
             "reason": (
-                f"Order value is ₹{amount_paise / 100:.2f}, "
-                f"above the agent transaction limit of "
+                f"Order value is "
+                f"₹{amount_paise / 100:.2f}, "
+                f"above the agent transaction "
+                f"limit of "
                 f"₹{max_transaction_paise / 100:.2f}."
             ),
             "limit_paise":
@@ -181,13 +185,19 @@ async def evaluate_purchase(
         )
     )
 
-    if amount_paise > available_paise:
+    if (
+        amount_paise
+        > available_paise
+    ):
         return {
             "decision": "BLOCK",
-            "code": "INSUFFICIENT_AGENT_BALANCE",
+            "code":
+                "INSUFFICIENT_AGENT_BALANCE",
             "reason": (
-                f"Agent balance is ₹{available_paise / 100:.2f}; "
-                f"the purchase requires ₹{amount_paise / 100:.2f}."
+                f"Agent balance is "
+                f"₹{available_paise / 100:.2f}; "
+                f"the purchase requires "
+                f"₹{amount_paise / 100:.2f}."
             ),
             "balance_paise":
                 available_paise,
@@ -209,7 +219,8 @@ async def evaluate_purchase(
     if daily_limit_paise <= 0:
         return {
             "decision": "BLOCK",
-            "code": "DAILY_LIMIT_NOT_CONFIGURED",
+            "code":
+                "DAILY_LIMIT_NOT_CONFIGURED",
             "reason":
                 "The agent daily spending limit is not configured.",
         }
@@ -221,17 +232,20 @@ async def evaluate_purchase(
     if not owner_clerk_user_id:
         return {
             "decision": "BLOCK",
-            "code": "AGENT_OWNER_MISSING",
+            "code":
+                "AGENT_OWNER_MISSING",
             "reason":
                 "The agent owner identity is missing.",
         }
 
-    spent_today_paise = await daily_spend_paise(
-        agent["_id"],
-        owner_clerk_user_id,
+    spent_today_paise = (
+        await daily_spend_paise(
+            agent["_id"],
+            owner_clerk_user_id,
+        )
     )
 
-    daily_remaining_paise = max(
+    remaining_paise = max(
         0,
         daily_limit_paise
         - spent_today_paise,
@@ -244,50 +258,79 @@ async def evaluate_purchase(
     ):
         return {
             "decision": "BLOCK",
-            "code": "DAILY_LIMIT_EXCEEDED",
+            "code":
+                "DAILY_LIMIT_EXCEEDED",
             "reason": (
-                "Daily spending limit would be exceeded. "
+                "Daily spending limit would "
+                "be exceeded. "
                 f"Remaining today: "
-                f"₹{daily_remaining_paise / 100:.2f}."
+                f"₹{remaining_paise / 100:.2f}."
             ),
             "daily_limit_paise":
                 daily_limit_paise,
             "spent_today_paise":
                 spent_today_paise,
             "remaining_paise":
-                daily_remaining_paise,
+                remaining_paise,
             "requested_paise":
                 amount_paise,
         }
 
     # --------------------------------------------------------
-    # Categories
+    # CATEGORY POLICY
     # --------------------------------------------------------
 
     normalized_categories = {
-        str(x).strip().lower()
-        for x in categories
-        if str(x).strip()
+        str(value)
+        .strip()
+        .lower()
+        for value in categories
+        if str(value).strip()
     }
 
+    category_mode = str(
+        policy.get(
+            "category_mode",
+            "ALL",
+        )
+    ).strip().upper()
+
     allowed_categories = {
-        str(x).strip().lower()
-        for x in policy.get(
+        str(value)
+        .strip()
+        .lower()
+        for value in policy.get(
             "allowed_categories",
             [],
         )
-        if str(x).strip()
+        if str(value).strip()
     }
 
     blocked_categories = {
-        str(x).strip().lower()
-        for x in policy.get(
+        str(value)
+        .strip()
+        .lower()
+        for value in policy.get(
             "blocked_categories",
             [],
         )
-        if str(x).strip()
+        if str(value).strip()
     }
 
+    # Invalid policy should fail closed.
+    if category_mode not in {
+        "ALL",
+        "SELECTED",
+    }:
+        return {
+            "decision": "BLOCK",
+            "code":
+                "INVALID_CATEGORY_POLICY",
+            "reason":
+                "Agent category policy is invalid.",
+        }
+
+    # Blocked categories always win.
     blocked_hit = (
         normalized_categories
         & blocked_categories
@@ -300,7 +343,8 @@ async def evaluate_purchase(
 
         return {
             "decision": "BLOCK",
-            "code": "CATEGORY_BLOCKED",
+            "code":
+                "CATEGORY_BLOCKED",
             "reason": (
                 "Blocked categories: "
                 + ", ".join(blocked)
@@ -310,37 +354,53 @@ async def evaluate_purchase(
                 blocked,
         }
 
-    if (
-        allowed_categories
-        and not normalized_categories.issubset(
-            allowed_categories
-        )
-    ):
-        missing = sorted(
+    # SELECTED means only selected categories.
+    if category_mode == "SELECTED":
+
+        if not allowed_categories:
+            return {
+                "decision":
+                    "BLOCK",
+                "code":
+                    "CATEGORY_POLICY_EMPTY",
+                "reason":
+                    "This agent is configured for selected categories but none are selected.",
+            }
+
+        not_allowed = sorted(
             normalized_categories
             - allowed_categories
         )
 
-        return {
-            "decision": "BLOCK",
-            "code": "CATEGORY_NOT_ALLOWED",
-            "reason": (
-                "Categories not allowed: "
-                + ", ".join(missing)
-                + "."
-            ),
-            "not_allowed":
-                missing,
-        }
+        if not_allowed:
+            return {
+                "decision":
+                    "BLOCK",
+                "code":
+                    "CATEGORY_NOT_ALLOWED",
+                "reason": (
+                    "Categories not allowed: "
+                    + ", ".join(
+                        not_allowed
+                    )
+                    + "."
+                ),
+                "not_allowed":
+                    not_allowed,
+            }
+
+    # ALL mode permits every category except explicit blocks.
 
     # --------------------------------------------------------
-    # Merchant policy
+    # MERCHANT POLICY
     # --------------------------------------------------------
 
     if not merchant:
         return {
-            "decision": "BLOCK",
-            "code": "MERCHANT_UNAVAILABLE",
+            "decision":
+                "BLOCK",
+            "code":
+                "MERCHANT_UNAVAILABLE",
             "reason":
                 "Merchant configuration is unavailable.",
         }
@@ -350,7 +410,8 @@ async def evaluate_purchase(
         False,
     ):
         return {
-            "decision": "BLOCK",
+            "decision":
+                "BLOCK",
             "code":
                 "MERCHANT_AI_PURCHASING_DISABLED",
             "reason":
@@ -362,7 +423,8 @@ async def evaluate_purchase(
         False,
     ):
         return {
-            "decision": "BLOCK",
+            "decision":
+                "BLOCK",
             "code":
                 "MERCHANT_AI_CHECKOUT_DISABLED",
             "reason":
@@ -378,10 +440,12 @@ async def evaluate_purchase(
 
     if (
         merchant_max_paise <= 0
-        or amount_paise > merchant_max_paise
+        or amount_paise
+        > merchant_max_paise
     ):
         return {
-            "decision": "BLOCK",
+            "decision":
+                "BLOCK",
             "code":
                 "MERCHANT_ORDER_LIMIT_EXCEEDED",
             "reason": (
@@ -395,32 +459,46 @@ async def evaluate_purchase(
         }
 
     # --------------------------------------------------------
-    # Allowed
+    # ALLOW
     # --------------------------------------------------------
 
     return {
-        "decision": "ALLOW",
-        "code": "POLICY_ALLOWED",
+        "decision":
+            "ALLOW",
+
+        "code":
+            "POLICY_ALLOWED",
+
         "reason": [
             "Agent is active.",
+
             (
                 "Purchase was explicitly confirmed."
                 if confirmed
                 else
                 "Agent auto-purchase policy permits the purchase."
             ),
+
             "Transaction is within the agent limit.",
+
             "Agent has sufficient available balance.",
+
             "Daily spending limit is satisfied.",
-            "Categories are allowed.",
+
+            "Category policy is satisfied.",
+
             "Merchant permits AI purchasing.",
+
             "Merchant permits AI checkout.",
+
             "Merchant order limit is satisfied.",
         ],
+
         "spent_today_paise":
             spent_today_paise,
+
         "daily_remaining_paise":
-            daily_remaining_paise,
+            remaining_paise,
     }
 
 
@@ -445,14 +523,17 @@ async def reserve_agent_balance(
 
     agent = await db.agents.find_one_and_update(
         {
-            "_id": agent_id,
+            "_id":
+                agent_id,
             "owner_clerk_user_id":
                 owner_clerk_user_id,
-            "status": "ACTIVE",
-            "balance_available_paise": {
-                "$gte":
-                    amount_paise
-            },
+            "status":
+                "ACTIVE",
+            "balance_available_paise":
+                {
+                    "$gte":
+                        amount_paise,
+                },
         },
         {
             "$inc": {
@@ -500,13 +581,15 @@ async def release_agent_balance(
 
     agent = await db.agents.find_one_and_update(
         {
-            "_id": agent_id,
+            "_id":
+                agent_id,
             "owner_clerk_user_id":
                 owner_clerk_user_id,
-            "balance_reserved_paise": {
-                "$gte":
-                    amount_paise
-            },
+            "balance_reserved_paise":
+                {
+                    "$gte":
+                        amount_paise,
+                },
         },
         {
             "$inc": {
@@ -554,13 +637,15 @@ async def commit_agent_balance(
 
     agent = await db.agents.find_one_and_update(
         {
-            "_id": agent_id,
+            "_id":
+                agent_id,
             "owner_clerk_user_id":
                 owner_clerk_user_id,
-            "balance_reserved_paise": {
-                "$gte":
-                    amount_paise
-            },
+            "balance_reserved_paise":
+                {
+                    "$gte":
+                        amount_paise,
+                },
         },
         {
             "$inc": {

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useUmonApi } from "@/src/lib/api";
-
+import { Loader2, Wallet } from "lucide-react";
 export default function FundingModal({
   agentId,
   amount,
@@ -24,10 +24,7 @@ export default function FundingModal({
     setBusy(true);
 
     try {
-      const order = await api.createFundingOrder(
-        agentId,
-        amount,
-      );
+      const order = await api.createFundingOrder(agentId, amount);
 
       const checkout = new window.Razorpay({
         key: order.key_id,
@@ -78,11 +75,26 @@ export default function FundingModal({
 
   return (
     <button
-      className="primary-button"
       onClick={startFunding}
       disabled={busy}
+      className="group relative flex w-full items-center justify-center gap-2 rounded-xl bg-gray-900 px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all duration-200 hover:bg-gray-800 hover:shadow-md active:scale-[0.98] disabled:pointer-events-none disabled:opacity-70 sm:w-auto"
     >
-      {busy ? "Opening Razorpay…" : `Fund ₹${amount}`}
+      {busy ? (
+        <>
+          <Loader2 size={16} className="animate-spin text-fuchsia-400" />
+          <span>Opening Razorpay&hellip;</span>
+        </>
+      ) : (
+        <>
+          <Wallet
+            size={16}
+            className="text-gray-300 transition-colors group-hover:text-fuchsia-400"
+          />
+          <span>
+            Fund <span className="font-bold tracking-tight">₹{amount}</span>
+          </span>
+        </>
+      )}
     </button>
   );
 }

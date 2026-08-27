@@ -5,6 +5,8 @@ import hmac
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+
+
 from .config import settings
 from .db import get_db
 from .models import public_agent
@@ -29,33 +31,91 @@ from .services import (
     update_cart_item,
     verify_agent_funding,
     verify_direct_razorpay_order,
+    admin_audit,
+        admin_create_product,
+        admin_dashboard,
+        admin_delete_product,
+        admin_get_merchant,
+        admin_list_agents,
+        admin_list_orders,
+        admin_list_payments,
+        admin_list_products,
+        admin_list_users,
+        admin_update_merchant,
+        admin_update_product,
 )
 
 router = APIRouter()
-
-
 class AgentCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=80)
-    description: str | None = Field(default=None, max_length=500)
-    max_transaction: float = Field(gt=0)
-    daily_limit: float = Field(gt=0)
+    name: str = Field(
+        min_length=2,
+        max_length=80,
+    )
+
+    description: str | None = Field(
+        default=None,
+        max_length=500,
+    )
+
+    max_transaction: float = Field(
+        gt=0,
+    )
+
+    daily_limit: float = Field(
+        gt=0,
+    )
+
     auto_purchase: bool = False
-    allowed_categories: list[str] = []
-    blocked_categories: list[str] = []
+
+    category_mode: str = Field(
+        default="ALL",
+    )
+
+    allowed_categories: list[str] = Field(
+        default_factory=list,
+    )
+
+    blocked_categories: list[str] = Field(
+        default_factory=list,
+    )
 
 
 class AgentUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=2, max_length=80)
-    description: str | None = Field(default=None, max_length=500)
+    name: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=80,
+    )
 
+    description: str | None = Field(
+        default=None,
+        max_length=500,
+    )
 
 class AgentPolicyPatch(BaseModel):
-    max_transaction: float | None = Field(default=None, gt=0)
-    daily_limit: float | None = Field(default=None, gt=0)
-    auto_purchase: bool | None = None
-    allowed_categories: list[str] | None = None
-    blocked_categories: list[str] | None = None
+    max_transaction: float | None = Field(
+        default=None,
+        gt=0,
+    )
 
+    daily_limit: float | None = Field(
+        default=None,
+        gt=0,
+    )
+
+    auto_purchase: bool | None = None
+
+    category_mode: str | None = Field(
+        default=None,
+    )
+
+    allowed_categories: list[str] | None = Field(
+        default=None,
+    )
+
+    blocked_categories: list[str] | None = Field(
+        default=None,
+    )
 
 class AgentStatusPatch(BaseModel):
     status: str
@@ -105,21 +165,72 @@ async def me(user=Depends(get_current_user)):
 
 
 # ----------------------------- AGENTS -----------------------------
-
 @router.post("/agents")
-async def create_agent_route(body: AgentCreate, user=Depends(get_current_user)):
-    return {"success": True, "agent": await create_agent(
-        owner_clerk_user_id=user["clerk_user_id"],
-        name=body.name,
-        description=body.description,
-        max_transaction_paise=round(body.max_transaction * 100),
-        daily_limit_paise=round(body.daily_limit * 100),
-        auto_purchase=body.auto_purchase,
-        allowed_categories=body.allowed_categories,
-        blocked_categories=body.blocked_categories,
-    )}
+async def create_agent_route(
+    body: AgentCreate,
+    user=Depends(get_current_user),
+):
+    category_mode = (
+        body.category_mode
+        .strip()
+        .upper()
+    )
 
+    if category_mode not in {
+        "ALL",
+        "SELECTED",
+    }:
+        raise HTTPException(
+            400,
+            "category_mode must be ALL or SELECTED.",
+        )
 
+    if (
+        category_mode == "SELECTED"
+        and not body.allowed_categories
+    ):
+        raise HTTPException(
+            400,
+            "Select at least one category or choose Everything.",
+        )
+
+    return {
+        "success": True,
+        "agent": await create_agent(
+            owner_clerk_user_id=
+                user["clerk_user_id"],
+
+            name=
+                body.name,
+
+            description=
+                body.description,
+
+            max_transaction_paise=
+                round(
+                    body.max_transaction
+                    * 100
+                ),
+
+            daily_limit_paise=
+                round(
+                    body.daily_limit
+                    * 100
+                ),
+
+            auto_purchase=
+                body.auto_purchase,
+
+            category_mode=
+                category_mode,
+
+            allowed_categories=
+                body.allowed_categories,
+
+            blocked_categories=
+                body.blocked_categories,
+        ),
+    }
 @router.get("/agents")
 async def list_agents(user=Depends(get_current_user)):
     docs = await get_db().agents.find({"owner_clerk_user_id": user["clerk_user_id"]}).sort("created_at", -1).to_list(length=100)
@@ -157,14 +268,37 @@ async def agent_status(agent_id: str, body: AgentStatusPatch, user=Depends(get_c
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-
 @router.patch("/agents/{agent_id}/policy")
-async def patch_policy(agent_id: str, body: AgentPolicyPatch, user=Depends(get_current_user)):
+async def patch_agent_policy(
+    agent_id: str,
+    body: AgentPolicyPatch,
+    user=Depends(get_current_user),
+):
     try:
-        return {"success": True, "agent": await update_agent_policy(owner_clerk_user_id=user["clerk_user_id"], agent_id=agent_id, **body.model_dump(exclude_none=True))}
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        updated_agent = await update_agent_policy(
+            owner_clerk_user_id=user["clerk_user_id"],
+            agent_id=agent_id,
 
+            max_transaction=body.max_transaction,
+            daily_limit=body.daily_limit,
+            auto_purchase=body.auto_purchase,
+
+            category_mode=body.category_mode,
+
+            allowed_categories=body.allowed_categories,
+            blocked_categories=body.blocked_categories,
+        )
+
+        return {
+            "success": True,
+            "agent": updated_agent,
+        }
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
 
 @router.get("/agents/{agent_id}/stats")
 async def agent_stats_route(agent_id: str, user=Depends(get_current_user)):
@@ -318,3 +452,356 @@ async def razorpay_webhook(request: Request):
         raise HTTPException(401,"Invalid webhook signature.")
     await audit(owner_clerk_user_id=None, action="RAZORPAY_WEBHOOK_RECEIVED", result="SUCCESS")
     return {"success":True}
+
+
+
+# ============================================================
+# DEV ADMIN
+# ============================================================
+#
+# NO ADMIN AUTHENTICATION YET.
+# LOCAL / BUILDATHON USE ONLY.
+#
+# DO NOT expose these endpoints publicly.
+# ============================================================
+
+
+class AdminMerchantUpdate(BaseModel):
+    name: str | None = None
+    status: str | None = None
+
+    ai_discovery: bool | None = None
+    ai_purchasing: bool | None = None
+    ai_checkout: bool | None = None
+
+    recommendations_enabled: bool | None = None
+
+    max_order_value: float | None = None
+
+    allowed_categories: list[str] | None = None
+
+
+class AdminProductCreate(BaseModel):
+    name: str = Field(
+        min_length=1,
+        max_length=150,
+    )
+
+    brand: str = ""
+
+    category: str = Field(
+        min_length=1,
+        max_length=80,
+    )
+
+    price: float = Field(
+        gt=0,
+    )
+
+    mrp: float = Field(
+        gt=0,
+    )
+
+    stock: int = Field(
+        ge=0,
+    )
+
+    unit: str = ""
+
+    description: str = ""
+
+    image: str | None = None
+
+    tags: list[str] = Field(
+        default_factory=list,
+    )
+
+
+class AdminProductUpdate(BaseModel):
+    name: str | None = None
+    brand: str | None = None
+    category: str | None = None
+
+    price: float | None = Field(
+        default=None,
+        gt=0,
+    )
+
+    mrp: float | None = Field(
+        default=None,
+        gt=0,
+    )
+
+    stock: int | None = Field(
+        default=None,
+        ge=0,
+    )
+
+    unit: str | None = None
+    description: str | None = None
+    image: str | None = None
+
+    tags: list[str] | None = None
+
+    active: bool | None = None
+
+
+@router.get("/admin/dashboard")
+async def admin_dashboard_route():
+    return {
+        "success": True,
+        **await admin_dashboard(),
+    }
+
+
+@router.get("/admin/merchant")
+async def admin_merchant_route():
+    return {
+        "success": True,
+        "merchant":
+            await admin_get_merchant(),
+    }
+
+
+@router.patch("/admin/merchant")
+async def admin_merchant_update_route(
+    body: AdminMerchantUpdate,
+):
+    try:
+        merchant = await admin_update_merchant(
+            name=body.name,
+            status=body.status,
+            ai_discovery=body.ai_discovery,
+            ai_purchasing=body.ai_purchasing,
+            ai_checkout=body.ai_checkout,
+            recommendations_enabled=
+                body.recommendations_enabled,
+            max_order_value=
+                body.max_order_value,
+            allowed_categories=
+                body.allowed_categories,
+        )
+
+        return {
+            "success": True,
+            "merchant":
+                merchant,
+        }
+
+    except ValueError as exc:
+        raise HTTPException(
+            400,
+            str(exc),
+        ) from exc
+
+
+@router.get("/admin/products")
+async def admin_products_route(
+    q: str = "",
+    include_inactive: bool = True,
+):
+    return {
+        "success": True,
+        "products":
+            await admin_list_products(
+                query=q,
+                include_inactive=
+                    include_inactive,
+            ),
+    }
+
+
+@router.post("/admin/products")
+async def admin_create_product_route(
+    body: AdminProductCreate,
+):
+    try:
+        product = await admin_create_product(
+            name=body.name,
+            brand=body.brand,
+            category=body.category,
+            price_paise=
+                round(
+                    body.price * 100
+                ),
+            mrp_paise=
+                round(
+                    body.mrp * 100
+                ),
+            stock=body.stock,
+            unit=body.unit,
+            description=body.description,
+            image=body.image,
+            tags=body.tags,
+        )
+
+        return {
+            "success": True,
+            "product":
+                product,
+        }
+
+    except ValueError as exc:
+        raise HTTPException(
+            400,
+            str(exc),
+        ) from exc
+
+
+@router.patch(
+    "/admin/products/{product_id}"
+)
+async def admin_update_product_route(
+    product_id: str,
+    body: AdminProductUpdate,
+):
+    try:
+        product = await admin_update_product(
+            product_id,
+
+            name=body.name,
+            brand=body.brand,
+            category=body.category,
+
+            price_paise=(
+                round(
+                    body.price * 100
+                )
+                if body.price is not None
+                else None
+            ),
+
+            mrp_paise=(
+                round(
+                    body.mrp * 100
+                )
+                if body.mrp is not None
+                else None
+            ),
+
+            stock=body.stock,
+            unit=body.unit,
+            description=body.description,
+            image=body.image,
+            tags=body.tags,
+            active=body.active,
+        )
+
+        return {
+            "success": True,
+            "product":
+                product,
+        }
+
+    except ValueError as exc:
+        raise HTTPException(
+            400,
+            str(exc),
+        ) from exc
+
+
+@router.delete(
+    "/admin/products/{product_id}"
+)
+async def admin_delete_product_route(
+    product_id: str,
+):
+    try:
+        product = await admin_delete_product(
+            product_id
+        )
+
+        return {
+            "success": True,
+            "product":
+                product,
+        }
+
+    except ValueError as exc:
+        raise HTTPException(
+            404,
+            str(exc),
+        ) from exc
+
+
+@router.get("/admin/orders")
+async def admin_orders_route(
+    status: str | None = None,
+    payment_status: str | None = None,
+    limit: int = 200,
+):
+    return {
+        "success": True,
+        "orders":
+            await admin_list_orders(
+                status=status,
+                payment_status=
+                    payment_status,
+                limit=limit,
+            ),
+    }
+
+
+@router.get("/admin/payments")
+async def admin_payments_route(
+    status: str | None = None,
+    payment_type: str | None = None,
+    limit: int = 200,
+):
+    return {
+        "success": True,
+        "payments":
+            await admin_list_payments(
+                status=status,
+                payment_type=
+                    payment_type,
+                limit=limit,
+            ),
+    }
+
+
+@router.get("/admin/users")
+async def admin_users_route(
+    q: str = "",
+    limit: int = 200,
+):
+    return {
+        "success": True,
+        "users":
+            await admin_list_users(
+                query=q,
+                limit=limit,
+            ),
+    }
+
+
+@router.get("/admin/agents")
+async def admin_agents_route(
+    status: str | None = None,
+    limit: int = 200,
+):
+    return {
+        "success": True,
+        "agents":
+            await admin_list_agents(
+                status=status,
+                limit=limit,
+            ),
+    }
+
+
+@router.get("/admin/audit")
+async def admin_audit_route(
+    result: str | None = None,
+    action: str | None = None,
+    limit: int = 300,
+):
+    return {
+        "success": True,
+        "events":
+            await admin_audit(
+                result=result,
+                action=action,
+                limit=limit,
+            ),
+    }

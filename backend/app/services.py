@@ -125,7 +125,6 @@ async def audit(
 # ============================================================
 # AGENTS
 # ============================================================
-
 async def create_agent(
     *,
     owner_clerk_user_id: str,
@@ -134,15 +133,19 @@ async def create_agent(
     max_transaction_paise: int,
     daily_limit_paise: int,
     auto_purchase: bool,
-    allowed_categories: list[str],
-    blocked_categories: list[str],
+    category_mode: str = "ALL",
+    allowed_categories: list[str] | None = None,
+    blocked_categories: list[str] | None = None,
 ) -> dict[str, Any]:
+
     db = get_db()
 
     name = name.strip()
 
     if not name:
-        raise ValueError("Agent name is required.")
+        raise ValueError(
+            "Agent name is required."
+        )
 
     if max_transaction_paise <= 0:
         raise ValueError(
@@ -151,73 +154,142 @@ async def create_agent(
 
     if daily_limit_paise <= 0:
         raise ValueError(
-            "Daily spending limit must be greater than zero."
+            "Daily limit must be greater than zero."
         )
 
     if max_transaction_paise > daily_limit_paise:
         raise ValueError(
-            "Transaction limit cannot exceed daily spending limit."
+            "Transaction limit cannot exceed daily limit."
         )
 
-    allowed = _normalize_categories(
-        allowed_categories
+    category_mode = (
+        str(category_mode)
+        .strip()
+        .upper()
     )
 
-    blocked = _normalize_categories(
-        blocked_categories
+    if category_mode not in {
+        "ALL",
+        "SELECTED",
+    }:
+        raise ValueError(
+            "category_mode must be ALL or SELECTED."
+        )
+
+    allowed = sorted(
+        {
+            str(value)
+            .strip()
+            .lower()
+            for value in (
+                allowed_categories
+                or []
+            )
+            if str(value).strip()
+        }
     )
 
-    # A category should not simultaneously be allowed and blocked.
+    blocked = sorted(
+        {
+            str(value)
+            .strip()
+            .lower()
+            for value in (
+                blocked_categories
+                or []
+            )
+            if str(value).strip()
+        }
+    )
+
+    if (
+        category_mode == "SELECTED"
+        and not allowed
+    ):
+        raise ValueError(
+            "Select at least one category."
+        )
+
     overlap = sorted(
-        set(allowed) & set(blocked)
+        set(allowed)
+        & set(blocked)
     )
 
     if overlap:
         raise ValueError(
-            "Category exists in both allowed and blocked lists: "
+            "Category cannot be both allowed and blocked: "
             + ", ".join(overlap)
         )
+
+    # ALL means allowed_categories is not restrictive.
+    if category_mode == "ALL":
+        allowed = []
 
     now = utc_now()
 
     agent = {
-        "_id": f"agt_{uuid.uuid4().hex}",
-        "owner_clerk_user_id": owner_clerk_user_id,
-        "merchant_id": settings.merchant_id,
-        "name": name,
-        "description": (
-            description.strip()
-            if description
-            else None
-        ),
-        "status": "ACTIVE",
+        "_id":
+            f"agt_{uuid.uuid4().hex}",
 
-        # Current ledger state.
-        "balance_available_paise": 0,
-        "balance_reserved_paise": 0,
+        "owner_clerk_user_id":
+            owner_clerk_user_id,
 
-        # Historical counters.
-        "lifetime_funded_paise": 0,
-        "lifetime_spent_paise": 0,
+        "merchant_id":
+            settings.merchant_id,
 
-        # Provider payment ids already applied to this agent.
-        "funding_refs": [],
+        "name":
+            name,
+
+        "description":
+            (
+                description.strip()
+                if description
+                else None
+            ),
+
+        "status":
+            "ACTIVE",
+
+        "balance_available_paise":
+            0,
+
+        "balance_reserved_paise":
+            0,
+
+        "lifetime_funded_paise":
+            0,
+
+        "lifetime_spent_paise":
+            0,
+
+        "funding_refs":
+            [],
 
         "policy": {
             "max_transaction_paise":
                 max_transaction_paise,
+
             "daily_limit_paise":
                 daily_limit_paise,
+
             "auto_purchase":
                 bool(auto_purchase),
+
+            "category_mode":
+                category_mode,
+
             "allowed_categories":
                 allowed,
+
             "blocked_categories":
                 blocked,
         },
 
-        "created_at": now,
-        "updated_at": now,
+        "created_at":
+            now,
+
+        "updated_at":
+            now,
     }
 
     await db.agents.insert_one(
@@ -225,17 +297,23 @@ async def create_agent(
     )
 
     await audit(
-        owner_clerk_user_id=owner_clerk_user_id,
-        action="AGENT_CREATED",
-        result="SUCCESS",
-        agent_id=agent["_id"],
+        owner_clerk_user_id=
+            owner_clerk_user_id,
+        action=
+            "AGENT_CREATED",
+        result=
+            "SUCCESS",
+        agent_id=
+            agent["_id"],
         metadata={
-            "name": name,
+            "name":
+                name,
+            "category_mode":
+                category_mode,
         },
     )
 
     return public_agent(agent)
-
 
 async def get_owned_agent(
     owner_clerk_user_id: str,
@@ -338,14 +416,24 @@ async def revoke_agent(
         agent_id=agent_id,
         status="REVOKED",
     )
-
-
 async def update_agent_policy(
     *,
     owner_clerk_user_id: str,
     agent_id: str,
-    **kwargs: Any,
+    max_transaction: float | None = None,
+    daily_limit: float | None = None,
+    auto_purchase: bool | None = None,
+    category_mode: str | None = None,
+    allowed_categories: list[str] | None = None,
+    blocked_categories: list[str] | None = None,
 ) -> dict[str, Any]:
+    """
+    Update an agent's purchasing policy.
+
+    Policy updates are partial: omitted fields keep their current value.
+    The final merged policy is validated before it is persisted.
+    """
+
     db = get_db()
 
     agent = await get_owned_agent(
@@ -354,22 +442,22 @@ async def update_agent_policy(
     )
 
     if not agent:
-        raise ValueError(
-            "Agent not found."
-        )
+        raise ValueError("Agent not found.")
 
     current_policy = dict(
         agent.get("policy", {})
     )
 
     set_values: dict[str, Any] = {
-        "updated_at": utc_now()
+        "updated_at": utc_now(),
     }
 
-    if kwargs.get("max_transaction") is not None:
-        value = float(
-            kwargs["max_transaction"]
-        )
+    # --------------------------------------------------------
+    # Limits
+    # --------------------------------------------------------
+
+    if max_transaction is not None:
+        value = float(max_transaction)
 
         if value <= 0:
             raise ValueError(
@@ -380,10 +468,8 @@ async def update_agent_policy(
             "policy.max_transaction_paise"
         ] = round(value * 100)
 
-    if kwargs.get("daily_limit") is not None:
-        value = float(
-            kwargs["daily_limit"]
-        )
+    if daily_limit is not None:
+        value = float(daily_limit)
 
         if value <= 0:
             raise ValueError(
@@ -394,29 +480,132 @@ async def update_agent_policy(
             "policy.daily_limit_paise"
         ] = round(value * 100)
 
-    if kwargs.get("auto_purchase") is not None:
+    # --------------------------------------------------------
+    # Autonomous purchasing
+    # --------------------------------------------------------
+
+    if auto_purchase is not None:
         set_values[
             "policy.auto_purchase"
-        ] = bool(
-            kwargs["auto_purchase"]
-        )
+        ] = bool(auto_purchase)
 
-    if kwargs.get("allowed_categories") is not None:
+    # --------------------------------------------------------
+    # Category mode
+    # --------------------------------------------------------
+
+    if category_mode is not None:
+        mode = str(
+            category_mode
+        ).strip().upper()
+
+        if mode not in {"ALL", "SELECTED"}:
+            raise ValueError(
+                "category_mode must be ALL or SELECTED."
+            )
+
+        set_values[
+            "policy.category_mode"
+        ] = mode
+
+        # ALL means there is no allow-list restriction.
+        # Explicit blocked categories may still apply.
+        if mode == "ALL":
+            set_values[
+                "policy.allowed_categories"
+            ] = []
+
+    # --------------------------------------------------------
+    # Allowed categories
+    # --------------------------------------------------------
+
+    if allowed_categories is not None:
         set_values[
             "policy.allowed_categories"
         ] = _normalize_categories(
-            kwargs["allowed_categories"]
+            allowed_categories
         )
 
-    if kwargs.get("blocked_categories") is not None:
+    # --------------------------------------------------------
+    # Blocked categories
+    # --------------------------------------------------------
+
+    if blocked_categories is not None:
         set_values[
             "policy.blocked_categories"
         ] = _normalize_categories(
-            kwargs["blocked_categories"]
+            blocked_categories
         )
 
-    # Validate final merged policy.
-    final_max_transaction = int(
+    # --------------------------------------------------------
+    # Validate final merged category policy
+    # --------------------------------------------------------
+
+    final_mode = str(
+        set_values.get(
+            "policy.category_mode",
+            current_policy.get(
+                "category_mode",
+                "ALL",
+            ),
+        )
+    ).strip().upper()
+
+    final_allowed = set(
+        _normalize_categories(
+            list(
+                set_values.get(
+                    "policy.allowed_categories",
+                    current_policy.get(
+                        "allowed_categories",
+                        [],
+                    ),
+                )
+            )
+        )
+    )
+
+    final_blocked = set(
+        _normalize_categories(
+            list(
+                set_values.get(
+                    "policy.blocked_categories",
+                    current_policy.get(
+                        "blocked_categories",
+                        [],
+                    ),
+                )
+            )
+        )
+    )
+
+    if final_mode not in {"ALL", "SELECTED"}:
+        raise ValueError(
+            "Invalid category mode."
+        )
+
+    if (
+        final_mode == "SELECTED"
+        and not final_allowed
+    ):
+        raise ValueError(
+            "Select at least one category."
+        )
+
+    overlap = sorted(
+        final_allowed & final_blocked
+    )
+
+    if overlap:
+        raise ValueError(
+            "A category cannot be both allowed and blocked: "
+            + ", ".join(overlap)
+        )
+
+    # --------------------------------------------------------
+    # Validate final merged spending limits
+    # --------------------------------------------------------
+
+    final_max = int(
         set_values.get(
             "policy.max_transaction_paise",
             current_policy.get(
@@ -426,7 +615,7 @@ async def update_agent_policy(
         )
     )
 
-    final_daily_limit = int(
+    final_daily = int(
         set_values.get(
             "policy.daily_limit_paise",
             current_policy.get(
@@ -436,58 +625,29 @@ async def update_agent_policy(
         )
     )
 
-    final_allowed = set(
-        set_values.get(
-            "policy.allowed_categories",
-            current_policy.get(
-                "allowed_categories",
-                [],
-            ),
-        )
-    )
-
-    final_blocked = set(
-        set_values.get(
-            "policy.blocked_categories",
-            current_policy.get(
-                "blocked_categories",
-                [],
-            ),
-        )
-    )
-
-    if (
-        final_max_transaction <= 0
-        or final_daily_limit <= 0
-    ):
+    if final_max <= 0:
         raise ValueError(
-            "Agent spending limits must be greater than zero."
+            "Transaction limit must be greater than zero."
         )
 
-    if (
-        final_max_transaction
-        > final_daily_limit
-    ):
+    if final_daily <= 0:
+        raise ValueError(
+            "Daily limit must be greater than zero."
+        )
+
+    if final_max > final_daily:
         raise ValueError(
             "Transaction limit cannot exceed daily limit."
         )
 
-    overlap = sorted(
-        final_allowed & final_blocked
-    )
-
-    if overlap:
-        raise ValueError(
-            "Category exists in both allowed and "
-            "blocked lists: "
-            + ", ".join(overlap)
-        )
+    # --------------------------------------------------------
+    # Persist policy
+    # --------------------------------------------------------
 
     updated = await db.agents.find_one_and_update(
         {
             "_id": agent_id,
-            "owner_clerk_user_id":
-                owner_clerk_user_id,
+            "owner_clerk_user_id": owner_clerk_user_id,
         },
         {
             "$set": set_values,
@@ -496,24 +656,44 @@ async def update_agent_policy(
     )
 
     if not updated:
-        raise ValueError(
-            "Agent not found."
-        )
+        raise ValueError("Agent not found.")
+
+    # --------------------------------------------------------
+    # Audit policy change
+    # --------------------------------------------------------
 
     await audit(
-        owner_clerk_user_id=owner_clerk_user_id,
-        action="AGENT_POLICY_UPDATED",
-        result="SUCCESS",
-        agent_id=agent_id,
+        owner_clerk_user_id=
+            owner_clerk_user_id,
+        action=
+            "AGENT_POLICY_UPDATED",
+        result=
+            "SUCCESS",
+        agent_id=
+            agent_id,
         metadata={
-            key: value
-            for key, value in set_values.items()
-            if key != "updated_at"
+            "category_mode":
+                final_mode,
+            "allowed_categories":
+                sorted(final_allowed),
+            "blocked_categories":
+                sorted(final_blocked),
+            "max_transaction_paise":
+                final_max,
+            "daily_limit_paise":
+                final_daily,
+            "auto_purchase":
+                set_values.get(
+                    "policy.auto_purchase",
+                    current_policy.get(
+                        "auto_purchase",
+                        False,
+                    ),
+                ),
         },
     )
 
     return public_agent(updated)
-
 
 # ============================================================
 # AGENT STATS
@@ -3203,6 +3383,1257 @@ async def checkout_with_agent_balance(
         )
 
         raise
+
+
+# ============================================================
+# DEV ADMIN / MERCHANT CONTROL CENTER
+#
+# IMPORTANT:
+# These endpoints intentionally have NO admin authentication
+# for the local/buildathon environment.
+#
+# NEVER expose /api/admin/* publicly without authentication.
+# ============================================================
+
+
+async def admin_dashboard() -> dict[str, Any]:
+    db = get_db()
+
+    users_count = await db.users.count_documents({})
+    agents_count = await db.agents.count_documents({})
+    active_agents_count = await db.agents.count_documents(
+        {
+            "status": "ACTIVE",
+        }
+    )
+
+    orders_count = await db.orders.count_documents({})
+
+    paid_orders_count = await db.orders.count_documents(
+        {
+            "payment_status": "PAID",
+        }
+    )
+
+    pending_payment_count = await db.orders.count_documents(
+        {
+            "payment_status": {
+                "$in": [
+                    "PENDING",
+                    "PROCESSING",
+                    "UNKNOWN",
+                ]
+            }
+        }
+    )
+
+    products_count = await db.products.count_documents(
+        {
+            "merchant_id":
+                settings.merchant_id,
+        }
+    )
+
+    active_products_count = await db.products.count_documents(
+        {
+            "merchant_id":
+                settings.merchant_id,
+            "active":
+                True,
+        }
+    )
+
+    gmv_cursor = await db.orders.aggregate(
+        [
+            {
+                "$match": {
+                    "merchant_id":
+                        settings.merchant_id,
+                    "payment_status":
+                        "PAID",
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "total": {
+                        "$sum":
+                            "$amount_paise",
+                    },
+                }
+            },
+        ]
+    )
+
+    gmv_rows = await gmv_cursor.to_list(
+        length=1
+    )
+
+    gmv_paise = (
+        int(gmv_rows[0]["total"])
+        if gmv_rows
+        else 0
+    )
+
+    agent_balance_cursor = await db.agents.aggregate(
+        [
+            {
+                "$group": {
+                    "_id": None,
+                    "available": {
+                        "$sum":
+                            "$balance_available_paise",
+                    },
+                    "reserved": {
+                        "$sum":
+                            "$balance_reserved_paise",
+                    },
+                }
+            }
+        ]
+    )
+
+    agent_balance_rows = (
+        await agent_balance_cursor.to_list(
+            length=1
+        )
+    )
+
+    total_agent_available = (
+        int(
+            agent_balance_rows[0].get(
+                "available",
+                0,
+            )
+        )
+        if agent_balance_rows
+        else 0
+    )
+
+    total_agent_reserved = (
+        int(
+            agent_balance_rows[0].get(
+                "reserved",
+                0,
+            )
+        )
+        if agent_balance_rows
+        else 0
+    )
+
+    merchant = await db.merchants.find_one(
+        {
+            "_id":
+                settings.merchant_id,
+        }
+    )
+
+    recent_orders = await (
+        db.orders
+        .find(
+            {
+                "merchant_id":
+                    settings.merchant_id,
+            }
+        )
+        .sort(
+            "created_at",
+            -1,
+        )
+        .limit(10)
+        .to_list(
+            length=10
+        )
+    )
+
+    recent_audit = await (
+        db.audit_events
+        .find({})
+        .sort(
+            "created_at",
+            -1,
+        )
+        .limit(20)
+        .to_list(
+            length=20
+        )
+    )
+
+    return {
+        "merchant": merchant,
+        "metrics": {
+            "users":
+                users_count,
+            "agents":
+                agents_count,
+            "active_agents":
+                active_agents_count,
+            "orders":
+                orders_count,
+            "paid_orders":
+                paid_orders_count,
+            "pending_payments":
+                pending_payment_count,
+            "products":
+                products_count,
+            "active_products":
+                active_products_count,
+            "gmv_paise":
+                gmv_paise,
+            "gmv":
+                _money(
+                    gmv_paise
+                ),
+            "agent_available_paise":
+                total_agent_available,
+            "agent_available":
+                _money(
+                    total_agent_available
+                ),
+            "agent_reserved_paise":
+                total_agent_reserved,
+            "agent_reserved":
+                _money(
+                    total_agent_reserved
+                ),
+        },
+        "recent_orders": [
+            {
+                "id":
+                    order["_id"],
+                "status":
+                    order.get("status"),
+                "payment_status":
+                    order.get(
+                        "payment_status"
+                    ),
+                "payment_method":
+                    order.get(
+                        "payment_method"
+                    ),
+                "agent_id":
+                    order.get(
+                        "agent_id"
+                    ),
+                "amount_paise":
+                    int(
+                        order.get(
+                            "amount_paise",
+                            0,
+                        )
+                    ),
+                "amount":
+                    _money(
+                        order.get(
+                            "amount_paise",
+                            0,
+                        )
+                    ),
+                "created_at":
+                    order.get(
+                        "created_at"
+                    ),
+            }
+            for order in recent_orders
+        ],
+        "recent_audit": [
+            {
+                "id":
+                    event["_id"],
+                "action":
+                    event.get(
+                        "action"
+                    ),
+                "result":
+                    event.get(
+                        "result"
+                    ),
+                "agent_id":
+                    event.get(
+                        "agent_id"
+                    ),
+                "amount_paise":
+                    event.get(
+                        "amount_paise"
+                    ),
+                "amount":
+                    (
+                        _money(
+                            event[
+                                "amount_paise"
+                            ]
+                        )
+                        if event.get(
+                            "amount_paise"
+                        )
+                        is not None
+                        else None
+                    ),
+                "reason":
+                    event.get(
+                        "reason"
+                    ),
+                "created_at":
+                    event.get(
+                        "created_at"
+                    ),
+            }
+            for event in recent_audit
+        ],
+    }
+
+
+async def admin_get_merchant() -> dict[str, Any]:
+    db = get_db()
+
+    merchant = await db.merchants.find_one(
+        {
+            "_id":
+                settings.merchant_id,
+        }
+    )
+
+    if not merchant:
+        raise ValueError(
+            "Merchant not found."
+        )
+
+    return merchant
+
+
+async def admin_update_merchant(
+    *,
+    name: str | None = None,
+    status: str | None = None,
+    ai_discovery: bool | None = None,
+    ai_purchasing: bool | None = None,
+    ai_checkout: bool | None = None,
+    recommendations_enabled: bool | None = None,
+    max_order_value: float | None = None,
+    allowed_categories: list[str] | None = None,
+) -> dict[str, Any]:
+
+    db = get_db()
+
+    merchant = await admin_get_merchant()
+
+    updates: dict[str, Any] = {
+        "updated_at":
+            utc_now(),
+    }
+
+    if name is not None:
+        cleaned_name = name.strip()
+
+        if not cleaned_name:
+            raise ValueError(
+                "Merchant name cannot be empty."
+            )
+
+        updates["name"] = cleaned_name
+
+    if status is not None:
+        normalized_status = (
+            status.strip().upper()
+        )
+
+        if normalized_status not in {
+            "ACTIVE",
+            "DISABLED",
+        }:
+            raise ValueError(
+                "Merchant status must be ACTIVE or DISABLED."
+            )
+
+        updates["status"] = (
+            normalized_status
+        )
+
+    if ai_discovery is not None:
+        updates[
+            "ai_discovery"
+        ] = bool(
+            ai_discovery
+        )
+
+    if ai_purchasing is not None:
+        updates[
+            "ai_purchasing"
+        ] = bool(
+            ai_purchasing
+        )
+
+    if ai_checkout is not None:
+        updates[
+            "ai_checkout"
+        ] = bool(
+            ai_checkout
+        )
+
+    if recommendations_enabled is not None:
+        updates[
+            "recommendations_enabled"
+        ] = bool(
+            recommendations_enabled
+        )
+
+    if max_order_value is not None:
+        if max_order_value <= 0:
+            raise ValueError(
+                "Maximum order value must be greater than zero."
+            )
+
+        updates[
+            "max_order_value"
+        ] = round(
+            max_order_value * 100
+        )
+
+    if allowed_categories is not None:
+        normalized_categories = sorted(
+            {
+                str(value)
+                .strip()
+                .lower()
+                for value in allowed_categories
+                if str(value).strip()
+            }
+        )
+
+        updates[
+            "allowed_categories"
+        ] = normalized_categories
+
+    updated = await db.merchants.find_one_and_update(
+        {
+            "_id":
+                settings.merchant_id,
+        },
+        {
+            "$set":
+                updates,
+        },
+        return_document=
+            ReturnDocument.AFTER,
+    )
+
+    if not updated:
+        raise ValueError(
+            "Merchant not found."
+        )
+
+    return updated
+
+
+async def admin_list_products(
+    *,
+    query: str = "",
+    include_inactive: bool = True,
+) -> list[dict[str, Any]]:
+
+    db = get_db()
+
+    mongo_query: dict[str, Any] = {
+        "merchant_id":
+            settings.merchant_id,
+    }
+
+    if not include_inactive:
+        mongo_query[
+            "active"
+        ] = True
+
+    query = query.strip()
+
+    if query:
+        mongo_query[
+            "$or"
+        ] = [
+            {
+                "name": {
+                    "$regex":
+                        query,
+                    "$options":
+                        "i",
+                }
+            },
+            {
+                "brand": {
+                    "$regex":
+                        query,
+                    "$options":
+                        "i",
+                }
+            },
+            {
+                "category": {
+                    "$regex":
+                        query,
+                    "$options":
+                        "i",
+                }
+            },
+        ]
+
+    products = await (
+        db.products
+        .find(mongo_query)
+        .sort(
+            "name",
+            1,
+        )
+        .limit(200)
+        .to_list(
+            length=200
+        )
+    )
+
+    return [
+        public_product(
+            product
+        )
+        for product in products
+    ]
+
+
+async def admin_create_product(
+    *,
+    name: str,
+    brand: str,
+    category: str,
+    price_paise: int,
+    mrp_paise: int,
+    stock: int,
+    unit: str,
+    description: str,
+    image: str | None = None,
+    tags: list[str] | None = None,
+) -> dict[str, Any]:
+
+    db = get_db()
+
+    if price_paise <= 0:
+        raise ValueError(
+            "Price must be greater than zero."
+        )
+
+    if mrp_paise < price_paise:
+        raise ValueError(
+            "MRP cannot be lower than selling price."
+        )
+
+    if stock < 0:
+        raise ValueError(
+            "Stock cannot be negative."
+        )
+
+    normalized_category = (
+        category.strip().lower()
+    )
+
+    if not normalized_category:
+        raise ValueError(
+            "Category is required."
+        )
+
+    now = utc_now()
+
+    product = {
+        "_id":
+            f"p_{uuid.uuid4().hex}",
+        "merchant_id":
+            settings.merchant_id,
+        "name":
+            name.strip(),
+        "brand":
+            brand.strip(),
+        "category":
+            normalized_category,
+        "price_paise":
+            int(price_paise),
+        "mrp_paise":
+            int(mrp_paise),
+        "rating":
+            0,
+        "stock":
+            int(stock),
+        "unit":
+            unit.strip(),
+        "description":
+            description.strip(),
+        "image":
+            image.strip()
+            if image
+            else None,
+        "tags":
+            sorted(
+                {
+                    str(tag)
+                    .strip()
+                    .lower()
+                    for tag in (
+                        tags or []
+                    )
+                    if str(tag).strip()
+                }
+            ),
+        "active":
+            True,
+        "created_at":
+            now,
+        "updated_at":
+            now,
+    }
+
+    await db.products.insert_one(
+        product
+    )
+
+    return public_product(
+        product
+    )
+
+
+async def admin_update_product(
+    product_id: str,
+    *,
+    name: str | None = None,
+    brand: str | None = None,
+    category: str | None = None,
+    price_paise: int | None = None,
+    mrp_paise: int | None = None,
+    stock: int | None = None,
+    unit: str | None = None,
+    description: str | None = None,
+    image: str | None = None,
+    tags: list[str] | None = None,
+    active: bool | None = None,
+) -> dict[str, Any]:
+
+    db = get_db()
+
+    existing = await db.products.find_one(
+        {
+            "_id":
+                product_id,
+            "merchant_id":
+                settings.merchant_id,
+        }
+    )
+
+    if not existing:
+        raise ValueError(
+            "Product not found."
+        )
+
+    updates: dict[str, Any] = {
+        "updated_at":
+            utc_now(),
+    }
+
+    if name is not None:
+        if not name.strip():
+            raise ValueError(
+                "Product name cannot be empty."
+            )
+
+        updates[
+            "name"
+        ] = name.strip()
+
+    if brand is not None:
+        updates[
+            "brand"
+        ] = brand.strip()
+
+    if category is not None:
+        if not category.strip():
+            raise ValueError(
+                "Category cannot be empty."
+            )
+
+        updates[
+            "category"
+        ] = category.strip().lower()
+
+    if price_paise is not None:
+        if price_paise <= 0:
+            raise ValueError(
+                "Price must be greater than zero."
+            )
+
+        current_mrp = int(
+            existing.get(
+                "mrp_paise",
+                price_paise,
+            )
+        )
+
+        if (
+            mrp_paise is None
+            and price_paise > current_mrp
+        ):
+            raise ValueError(
+                "Price cannot exceed MRP."
+            )
+
+        updates[
+            "price_paise"
+        ] = int(price_paise)
+
+    if mrp_paise is not None:
+        if mrp_paise <= 0:
+            raise ValueError(
+                "MRP must be greater than zero."
+            )
+
+        final_price = int(
+            updates.get(
+                "price_paise",
+                existing.get(
+                    "price_paise",
+                    0,
+                ),
+            )
+        )
+
+        if mrp_paise < final_price:
+            raise ValueError(
+                "MRP cannot be lower than selling price."
+            )
+
+        updates[
+            "mrp_paise"
+        ] = int(mrp_paise)
+
+    if stock is not None:
+        if stock < 0:
+            raise ValueError(
+                "Stock cannot be negative."
+            )
+
+        updates[
+            "stock"
+        ] = int(stock)
+
+    if unit is not None:
+        updates[
+            "unit"
+        ] = unit.strip()
+
+    if description is not None:
+        updates[
+            "description"
+        ] = description.strip()
+
+    if image is not None:
+        updates[
+            "image"
+        ] = image.strip() or None
+
+    if tags is not None:
+        updates[
+            "tags"
+        ] = sorted(
+            {
+                str(tag)
+                .strip()
+                .lower()
+                for tag in tags
+                if str(tag).strip()
+            }
+        )
+
+    if active is not None:
+        updates[
+            "active"
+        ] = bool(active)
+
+    updated = await db.products.find_one_and_update(
+        {
+            "_id":
+                product_id,
+            "merchant_id":
+                settings.merchant_id,
+        },
+        {
+            "$set":
+                updates,
+        },
+        return_document=
+            ReturnDocument.AFTER,
+    )
+
+    if not updated:
+        raise ValueError(
+            "Product not found."
+        )
+
+    return public_product(
+        updated
+    )
+
+
+async def admin_delete_product(
+    product_id: str,
+) -> dict[str, Any]:
+
+    db = get_db()
+
+    product = await db.products.find_one_and_update(
+        {
+            "_id":
+                product_id,
+            "merchant_id":
+                settings.merchant_id,
+        },
+        {
+            "$set": {
+                "active":
+                    False,
+                "updated_at":
+                    utc_now(),
+            }
+        },
+        return_document=
+            ReturnDocument.AFTER,
+    )
+
+    if not product:
+        raise ValueError(
+            "Product not found."
+        )
+
+    return public_product(
+        product
+    )
+
+
+async def admin_list_orders(
+    *,
+    status: str | None = None,
+    payment_status: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+
+    db = get_db()
+
+    query: dict[str, Any] = {
+        "merchant_id":
+            settings.merchant_id,
+    }
+
+    if status:
+        query[
+            "status"
+        ] = status
+
+    if payment_status:
+        query[
+            "payment_status"
+        ] = payment_status
+
+    orders = await (
+        db.orders
+        .find(query)
+        .sort(
+            "created_at",
+            -1,
+        )
+        .limit(
+            max(
+                1,
+                min(
+                    int(limit),
+                    500,
+                ),
+            )
+        )
+        .to_list(
+            length=500
+        )
+    )
+
+    return [
+        {
+            "id":
+                order["_id"],
+            "owner_clerk_user_id":
+                order.get(
+                    "owner_clerk_user_id"
+                ),
+            "agent_id":
+                order.get(
+                    "agent_id"
+                ),
+            "status":
+                order.get(
+                    "status"
+                ),
+            "payment_status":
+                order.get(
+                    "payment_status"
+                ),
+            "payment_method":
+                order.get(
+                    "payment_method"
+                ),
+            "amount_paise":
+                int(
+                    order.get(
+                        "amount_paise",
+                        0,
+                    )
+                ),
+            "amount":
+                _money(
+                    order.get(
+                        "amount_paise",
+                        0,
+                    )
+                ),
+            "currency":
+                order.get(
+                    "currency",
+                    "INR",
+                ),
+            "items":
+                order.get(
+                    "items",
+                    [],
+                ),
+            "created_at":
+                order.get(
+                    "created_at"
+                ),
+            "updated_at":
+                order.get(
+                    "updated_at"
+                ),
+        }
+        for order in orders
+    ]
+
+
+async def admin_list_payments(
+    *,
+    status: str | None = None,
+    payment_type: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+
+    db = get_db()
+
+    query: dict[str, Any] = {}
+
+    if status:
+        query[
+            "status"
+        ] = status
+
+    if payment_type:
+        query[
+            "type"
+        ] = payment_type
+
+    payments = await (
+        db.payments
+        .find(query)
+        .sort(
+            "created_at",
+            -1,
+        )
+        .limit(
+            max(
+                1,
+                min(
+                    int(limit),
+                    500,
+                ),
+            )
+        )
+        .to_list(
+            length=500
+        )
+    )
+
+    return [
+        {
+            "id":
+                payment["_id"],
+            "type":
+                payment.get(
+                    "type"
+                ),
+            "status":
+                payment.get(
+                    "status"
+                ),
+            "agent_id":
+                payment.get(
+                    "agent_id"
+                ),
+            "order_id":
+                payment.get(
+                    "order_id"
+                ),
+            "owner_clerk_user_id":
+                payment.get(
+                    "owner_clerk_user_id"
+                ),
+            "amount_paise":
+                int(
+                    payment.get(
+                        "amount_paise",
+                        0,
+                    )
+                ),
+            "amount":
+                _money(
+                    payment.get(
+                        "amount_paise",
+                        0,
+                    )
+                ),
+            "provider_payment_id":
+                payment.get(
+                    "provider_payment_id"
+                ),
+            "razorpay_order_id":
+                payment.get(
+                    "razorpay_order_id"
+                ),
+            "created_at":
+                payment.get(
+                    "created_at"
+                ),
+            "updated_at":
+                payment.get(
+                    "updated_at"
+                ),
+        }
+        for payment in payments
+    ]
+
+async def admin_list_users(
+    *,
+    query: str = "",
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+
+    db = get_db()
+
+    mongo_query: dict[str, Any] = {}
+
+    query = query.strip()
+
+    if query:
+        mongo_query["$or"] = [
+            {
+                "clerk_user_id": {
+                    "$regex": query,
+                    "$options": "i",
+                }
+            },
+            {
+                "email": {
+                    "$regex": query,
+                    "$options": "i",
+                }
+            },
+        ]
+
+    limit = max(
+        1,
+        min(int(limit), 500),
+    )
+
+    users = await (
+        db.users
+        .find(mongo_query)
+        .sort(
+            "created_at",
+            -1,
+        )
+        .limit(limit)
+        .to_list(
+            length=limit,
+        )
+    )
+
+    return [
+        {
+            # IMPORTANT:
+            # MongoDB ObjectId must be converted to string
+            # before FastAPI serializes the response.
+            "id": str(user["_id"]),
+
+            "clerk_user_id": user.get(
+                "clerk_user_id"
+            ),
+
+            "email": user.get(
+                "email"
+            ),
+
+            "status": user.get(
+                "status",
+                "ACTIVE",
+            ),
+
+            "created_at": user.get(
+                "created_at"
+            ),
+
+            "updated_at": user.get(
+                "updated_at"
+            ),
+        }
+        for user in users
+    ]
+
+
+async def admin_list_agents(
+    *,
+    status: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+
+    db = get_db()
+
+    query: dict[str, Any] = {
+        "merchant_id":
+            settings.merchant_id,
+    }
+
+    if status:
+        query[
+            "status"
+        ] = status
+
+    agents = await (
+        db.agents
+        .find(query)
+        .sort(
+            "created_at",
+            -1,
+        )
+        .limit(
+            max(
+                1,
+                min(
+                    int(limit),
+                    500,
+                ),
+            )
+        )
+        .to_list(
+            length=500
+        )
+    )
+
+    return [
+        public_agent(
+            agent
+        )
+        for agent in agents
+    ]
+
+
+async def admin_audit(
+    *,
+    result: str | None = None,
+    action: str | None = None,
+    limit: int = 300,
+) -> list[dict[str, Any]]:
+
+    db = get_db()
+
+    query: dict[str, Any] = {}
+
+    if result:
+        query[
+            "result"
+        ] = result
+
+    if action:
+        query[
+            "action"
+        ] = action
+
+    events = await (
+        db.audit_events
+        .find(query)
+        .sort(
+            "created_at",
+            -1,
+        )
+        .limit(
+            max(
+                1,
+                min(
+                    int(limit),
+                    500,
+                ),
+            )
+        )
+        .to_list(
+            length=500
+        )
+    )
+
+    return [
+        {
+            "id":
+                event["_id"],
+            "owner_clerk_user_id":
+                event.get(
+                    "owner_clerk_user_id"
+                ),
+            "agent_id":
+                event.get(
+                    "agent_id"
+                ),
+            "action":
+                event.get(
+                    "action"
+                ),
+            "result":
+                event.get(
+                    "result"
+                ),
+            "amount_paise":
+                event.get(
+                    "amount_paise"
+                ),
+            "amount":
+                (
+                    _money(
+                        event[
+                            "amount_paise"
+                        ]
+                    )
+                    if event.get(
+                        "amount_paise"
+                    ) is not None
+                    else None
+                ),
+            "reason":
+                event.get(
+                    "reason"
+                ),
+            "metadata":
+                event.get(
+                    "metadata",
+                    {},
+                ),
+            "created_at":
+                event.get(
+                    "created_at"
+                ),
+        }
+        for event in events
+    ]
 # ============================================================
 # END OF SERVICES
 # ============================================================
