@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     merchant_id: str = "umon-mart"
     merchant_name: str = "Umon Mart"
 
+    mcp_public_url: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
