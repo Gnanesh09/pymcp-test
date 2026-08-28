@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAuth, useClerk, useUser } from "@clerk/nextjs";
 import {
   ArrowRight,
@@ -21,31 +21,20 @@ type OAuthParams = {
   code_challenge_method: string;
 };
 
-type CompleteResponse = {
-  success?: boolean;
-  detail?: string;
-  message?: string;
-};
-
-const MCP_BASE_URL = (
-  process.env.NEXT_PUBLIC_MCP_BASE_URL ||
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/api\/?$/, "") ||
-  "http://localhost:8002"
-).replace(/\/$/, "");
-
-function getOAuthParams(): OAuthParams | null {
+function readOAuthParams(): OAuthParams | null {
   if (typeof window === "undefined") {
     return null;
   }
 
-  const params = new URLSearchParams(window.location.search);
+  const search = new URLSearchParams(window.location.search);
 
-  const client_id = params.get("client_id") || "";
-  const redirect_uri = params.get("redirect_uri") || "";
-  const scope = params.get("scope") || "umon";
-  const state = params.get("state") || "";
-  const code_challenge = params.get("code_challenge") || "";
-  const code_challenge_method = params.get("code_challenge_method") || "S256";
+  const client_id = search.get("client_id")?.trim() ?? "";
+  const redirect_uri = search.get("redirect_uri")?.trim() ?? "";
+  const scope = search.get("scope")?.trim() || "umon";
+  const state = search.get("state")?.trim() ?? "";
+  const code_challenge = search.get("code_challenge")?.trim() ?? "";
+  const code_challenge_method =
+    search.get("code_challenge_method")?.trim() || "S256";
 
   if (!client_id || !redirect_uri) {
     return null;
@@ -62,54 +51,43 @@ function getOAuthParams(): OAuthParams | null {
 }
 
 export default function MCPConnectPage() {
-  const { isLoaded: authLoaded, isSignedIn, getToken } = useAuth();
+  const { isLoaded, isSignedIn, getToken } = useAuth();
   const { user } = useUser();
   const { redirectToSignIn } = useClerk();
 
   const [oauth, setOauth] = useState<OAuthParams | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [initializing, setInitializing] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const returnUrl = useMemo(() => {
-    if (typeof window === "undefined") {
-      return "";
-    }
-
-    return window.location.href;
-  }, []);
-
   useEffect(() => {
-    const params = getOAuthParams();
+    const params = readOAuthParams();
+
+    setOauth(params);
 
     if (!params) {
       setError(
-        "This connection request is incomplete or has expired. Please start the connection again from ChatGPT.",
+        "This Umon connection request is incomplete or expired. Please start the connection again from ChatGPT.",
       );
     }
 
-    setOauth(params);
-    setLoading(false);
+    setInitializing(false);
   }, []);
 
   const startSignIn = useCallback(async () => {
-    if (!returnUrl) {
-      return;
-    }
-
     try {
       await redirectToSignIn({
-        signInForceRedirectUrl: returnUrl,
+        signInForceRedirectUrl: window.location.href,
       });
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Unable to open Umon sign-in.",
       );
     }
-  }, [redirectToSignIn, returnUrl]);
+  }, [redirectToSignIn]);
 
   const completeConnection = useCallback(async () => {
-    if (!oauth) {
+    if (!oauth || connecting) {
       return;
     }
 
@@ -125,230 +103,209 @@ export default function MCPConnectPage() {
         );
       }
 
-      const response = await fetch(`${MCP_BASE_URL}/oauth/complete`, {
+      /*
+       * IMPORTANT:
+       *
+       * We do NOT call the MCP server directly from the browser.
+       *
+       * The backend's /oauth/complete endpoint intentionally returns
+       * a redirect to ChatGPT. A browser fetch() would follow that
+       * cross-origin redirect as AJAX and trigger CORS.
+       *
+       * Instead, send the authenticated OAuth transaction to our
+       * same-origin Next.js route. That route talks server-to-server
+       * with the MCP server and then redirects the browser.
+       */
+      const response = await fetch("/mcp/connect/complete", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
+        credentials: "same-origin",
         body: JSON.stringify({
-          client_id: oauth.client_id,
-          redirect_uri: oauth.redirect_uri,
-          scope: oauth.scope,
-          state: oauth.state || null,
-          code_challenge: oauth.code_challenge || null,
-          code_challenge_method: oauth.code_challenge_method || "S256",
+          ...oauth,
           clerk_token: clerkToken,
         }),
         cache: "no-store",
       });
 
-      /*
-       * IMPORTANT:
-       *
-       * /oauth/complete intentionally returns a 302 redirect
-       * to ChatGPT with:
-       *
-       *   ?code=...
-       *   &state=...
-       *
-       * fetch() follows that redirect internally.
-       *
-       * Therefore, after successful completion we explicitly
-       * navigate to the final response URL.
-       */
-
       if (!response.ok) {
         let message = `Connection failed (${response.status}).`;
 
         try {
-          const data = (await response.json()) as CompleteResponse;
+          const data = (await response.json()) as {
+            detail?: string;
+            message?: string;
+          };
 
           message = data.detail || data.message || message;
         } catch {
-          // Keep the default error message.
+          // Keep default error.
         }
 
         throw new Error(message);
       }
 
-      /*
-       * Because browsers don't expose the final redirect URL
-       * in a way we should depend on here, use the redirect
-       * response URL supplied by fetch.
-       */
-      if (response.url && response.url !== `${MCP_BASE_URL}/oauth/complete`) {
-        window.location.assign(response.url);
-        return;
+      const data = (await response.json()) as {
+        redirect_url?: string;
+      };
+
+      if (!data.redirect_url) {
+        throw new Error(
+          "Umon approved the connection but did not return a ChatGPT redirect.",
+        );
       }
 
-      throw new Error(
-        "Umon approved the connection, but the redirect to ChatGPT could not be completed.",
-      );
+      /*
+       * TOP-LEVEL navigation to ChatGPT.
+       *
+       * This is a browser navigation, not fetch(), so ChatGPT does
+       * not need to provide CORS headers to your Umon origin.
+       */
+      window.location.assign(data.redirect_url);
     } catch (err) {
+      setConnecting(false);
+
       setError(
         err instanceof Error ? err.message : "Unable to connect Umon Mart.",
       );
-      setConnecting(false);
     }
-  }, [getToken, oauth]);
+  }, [connecting, getToken, oauth]);
 
   /*
-   * Automatically complete the OAuth transaction once the
-   * user has authenticated.
+   * If the user is already authenticated with Clerk,
+   * complete the OAuth transaction automatically.
    *
-   * This is important when ChatGPT sends the user to Umon
-   * and they were already signed in.
+   * This is why you saw your email immediately before.
+   * An existing Clerk browser session means we don't need
+   * to show the login screen again.
    */
   useEffect(() => {
-    if (!authLoaded || !oauth || !isSignedIn || connecting || error) {
+    if (!isLoaded || !oauth || !isSignedIn || connecting || error) {
       return;
     }
 
     void completeConnection();
-  }, [authLoaded, oauth, isSignedIn, connecting, error, completeConnection]);
+  }, [isLoaded, oauth, isSignedIn, connecting, error, completeConnection]);
 
-  if (loading || !authLoaded) {
+  if (initializing || !isLoaded) {
+    return <LoadingScreen />;
+  }
+
+  if (!oauth) {
     return (
-      <main className="min-h-screen bg-[#f7f8fa] text-[#101828] flex items-center justify-center px-6">
-        <div className="flex items-center gap-3 text-sm text-slate-500">
-          <Loader2 className="h-5 w-5 animate-spin" />
-          Preparing secure connection…
+      <main className="min-h-screen bg-[#f7f8fa] px-5 py-10 text-slate-950">
+        <div className="mx-auto flex min-h-[80vh] w-full max-w-[520px] items-center">
+          <div className="w-full rounded-[28px] border border-slate-200 bg-white p-8 shadow-[0_24px_80px_rgba(15,23,42,0.08)] sm:p-10">
+            <Brand />
+
+            <p className="mt-7 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Umon Mart
+            </p>
+
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight">
+              Invalid connection request
+            </h1>
+
+            <p className="mt-3 text-sm leading-6 text-slate-500">
+              This ChatGPT connection request is missing required information.
+              Please return to ChatGPT and start connecting Umon Mart again.
+            </p>
+
+            <div className="mt-7 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm font-medium text-amber-900">
+                No access was granted.
+              </p>
+            </div>
+          </div>
         </div>
       </main>
     );
   }
 
-  if (!oauth) {
-    return (
-      <main className="min-h-screen bg-[#f7f8fa] text-[#101828] flex items-center justify-center px-6">
-        <section className="w-full max-w-[520px]">
-          <div className="rounded-[28px] border border-slate-200 bg-white p-8 shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
-            <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white">
-              <ShoppingBag className="h-6 w-6" />
-            </div>
-
-            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Umon Mart
-            </p>
-
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Invalid connection request
-            </h1>
-
-            <p className="mt-3 text-sm leading-6 text-slate-500">
-              This Umon connection request is missing required OAuth
-              information. Return to ChatGPT and start the connection again.
-            </p>
-
-            <div className="mt-7 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              The connection was not approved and no access token was issued.
-            </div>
-          </div>
-        </section>
-      </main>
-    );
-  }
-
-  /*
-   * User isn't signed in.
-   *
-   * Keep the complete OAuth query string in returnBackUrl so
-   * Clerk returns the user to THIS exact connection request.
-   */
   if (!isSignedIn) {
     return (
-      <main className="min-h-screen bg-[#f7f8fa] text-[#101828] flex items-center justify-center px-6 py-10">
-        <section className="w-full max-w-[520px]">
-          <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.09)]">
+      <main className="min-h-screen bg-[#f7f8fa] px-5 py-10 text-slate-950">
+        <div className="mx-auto flex min-h-[80vh] w-full max-w-[560px] items-center">
+          <div className="w-full overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.09)]">
             <div className="p-8 sm:p-10">
-              <div className="mb-8 flex items-center justify-between">
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-sm">
-                  <span className="text-lg font-bold">U</span>
-                </div>
+              <div className="flex items-center justify-between">
+                <Brand />
 
-                <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-500">
-                  <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+                <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-500">
                   Secure connection
                 </div>
               </div>
 
-              <div>
+              <div className="mt-8">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
                   Connect your account
                 </p>
 
-                <h1 className="mt-2 text-[30px] font-semibold tracking-[-0.03em] text-slate-950">
+                <h1 className="mt-2 text-[32px] font-semibold tracking-[-0.035em]">
                   Connect Umon Mart
                 </h1>
 
-                <p className="mt-3 text-[15px] leading-6 text-slate-500">
+                <p className="mt-3 text-[15px] leading-7 text-slate-500">
                   Sign in with your existing Umon Mart account to let ChatGPT
-                  access your Umon shopping experience securely.
+                  work with your Umon shopping account.
                 </p>
               </div>
 
-              <div className="mt-7 space-y-3">
+              <div className="mt-8 space-y-3">
                 <PermissionRow
                   icon={<ShoppingBag className="h-4 w-4" />}
                   title="Your Umon shopping account"
-                  description="Your products, cart and orders remain tied to your Umon account."
+                  description="Your products, shared cart and orders remain tied to your Umon account."
                 />
 
                 <PermissionRow
                   icon={<Sparkles className="h-4 w-4" />}
-                  title="AI shopping"
-                  description="ChatGPT can search products and use your connected purchasing agents."
+                  title="AI-powered shopping"
+                  description="ChatGPT can search products, compare options and work with your purchasing agents."
                 />
 
                 <PermissionRow
                   icon={<ShieldCheck className="h-4 w-4" />}
                   title="Policy-protected purchases"
-                  description="Agent limits and merchant rules are enforced by Umon."
+                  description="Umon enforces your agent limits, category rules, balances and merchant controls."
                 />
               </div>
+
+              {error && <ErrorBox message={error} />}
 
               <button
                 type="button"
                 onClick={startSignIn}
-                className="mt-8 flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 px-5 py-3.5 text-sm font-semibold text-white transition hover:bg-slate-800 active:scale-[0.99]"
+                className="
+                  mt-8 flex h-12 w-full items-center justify-center gap-2
+                  rounded-2xl bg-slate-950 px-5
+                  text-sm font-semibold text-white
+                  transition hover:bg-slate-800
+                  active:scale-[0.99]
+                "
               >
                 Sign in to continue
                 <ArrowRight className="h-4 w-4" />
               </button>
 
               <p className="mt-4 text-center text-xs leading-5 text-slate-400">
-                You will return here automatically after signing in.
+                After signing in, you will automatically return here to finish
+                connecting ChatGPT.
               </p>
             </div>
 
-            <div className="border-t border-slate-100 bg-slate-50/70 px-8 py-5">
-              <div className="flex items-start gap-3">
-                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-
-                <p className="text-xs leading-5 text-slate-500">
-                  Umon never gives ChatGPT unrestricted access to your account.
-                  Financial actions remain subject to your purchasing-agent
-                  policies and Umon merchant controls.
-                </p>
-              </div>
-            </div>
+            <SecurityFooter />
           </div>
-        </section>
+        </div>
       </main>
     );
   }
 
-  /*
-   * Signed in + OAuth request is valid.
-   *
-   * The effect above will automatically complete the OAuth
-   * transaction. This screen is therefore intentionally
-   * simple and reassuring.
-   */
   return (
-    <main className="min-h-screen bg-[#f7f8fa] text-[#101828] flex items-center justify-center px-6 py-10">
-      <section className="w-full max-w-[520px]">
-        <div className="rounded-[28px] border border-slate-200 bg-white p-8 shadow-[0_24px_80px_rgba(15,23,42,0.09)] sm:p-10">
+    <main className="min-h-screen bg-[#f7f8fa] px-5 py-10 text-slate-950">
+      <div className="mx-auto flex min-h-[80vh] w-full max-w-[560px] items-center">
+        <div className="w-full rounded-[28px] border border-slate-200 bg-white p-8 shadow-[0_24px_80px_rgba(15,23,42,0.09)] sm:p-10">
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-50">
             {connecting ? (
               <Loader2 className="h-6 w-6 animate-spin text-emerald-600" />
@@ -362,14 +319,12 @@ export default function MCPConnectPage() {
           </p>
 
           <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-            {connecting ? "Connecting your account…" : "Ready to connect"}
+            {connecting ? "Connecting Umon Mart…" : "Ready to connect"}
           </h1>
 
           <p className="mt-3 text-sm leading-6 text-slate-500">
             {connecting
-              ? `Securely linking ${
-                  user?.primaryEmailAddress?.emailAddress || "your Umon account"
-                } with ChatGPT.`
+              ? "Securely linking your Umon account with ChatGPT."
               : "Your Umon account is authenticated."}
           </p>
 
@@ -394,25 +349,38 @@ export default function MCPConnectPage() {
             </div>
           </div>
 
-          {error && (
-            <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4">
-              <p className="text-sm font-semibold text-red-900">
-                Connection failed
-              </p>
+          {error && <ErrorBox message={error} />}
 
-              <p className="mt-1 text-sm leading-5 text-red-700">{error}</p>
+          {!error && (
+            <div className="mt-6 rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+              <div className="flex items-start gap-3">
+                <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
 
-              <button
-                type="button"
-                onClick={() => {
-                  setError(null);
-                  setConnecting(false);
-                }}
-                className="mt-4 rounded-xl bg-red-900 px-4 py-2 text-xs font-semibold text-white hover:bg-red-800"
-              >
-                Try again
-              </button>
+                <div>
+                  <p className="text-sm font-semibold text-emerald-950">
+                    Secure account binding
+                  </p>
+
+                  <p className="mt-1 text-xs leading-5 text-emerald-800">
+                    ChatGPT will access Umon through this authenticated account.
+                    Purchases remain subject to Umon's guardrails.
+                  </p>
+                </div>
+              </div>
             </div>
+          )}
+
+          {error && (
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setConnecting(false);
+              }}
+              className="mt-5 rounded-xl bg-slate-950 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-slate-800"
+            >
+              Try again
+            </button>
           )}
 
           {!error && (
@@ -421,8 +389,16 @@ export default function MCPConnectPage() {
             </p>
           )}
         </div>
-      </section>
+      </div>
     </main>
+  );
+}
+
+function Brand() {
+  return (
+    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white">
+      <span className="text-lg font-bold">U</span>
+    </div>
   );
 }
 
@@ -444,8 +420,45 @@ function PermissionRow({
       <div>
         <p className="text-sm font-semibold text-slate-900">{title}</p>
 
-        <p className="mt-0.5 text-xs leading-5 text-slate-500">{description}</p>
+        <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
       </div>
     </div>
+  );
+}
+
+function ErrorBox({ message }: { message: string }) {
+  return (
+    <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4">
+      <p className="text-sm font-semibold text-red-900">Connection failed</p>
+
+      <p className="mt-1 text-sm leading-5 text-red-700">{message}</p>
+    </div>
+  );
+}
+
+function SecurityFooter() {
+  return (
+    <div className="border-t border-slate-100 bg-slate-50/70 px-8 py-5 sm:px-10">
+      <div className="flex items-start gap-3">
+        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+
+        <p className="text-xs leading-5 text-slate-500">
+          Umon does not give ChatGPT unrestricted access to your account.
+          Financial actions remain bounded by your purchasing-agent policies and
+          Umon merchant controls.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function LoadingScreen() {
+  return (
+    <main className="min-h-screen bg-[#f7f8fa] flex items-center justify-center px-6">
+      <div className="flex items-center gap-3 text-sm text-slate-500">
+        <Loader2 className="h-5 w-5 animate-spin" />
+        Preparing secure connection…
+      </div>
+    </main>
   );
 }
