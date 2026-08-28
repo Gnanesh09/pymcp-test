@@ -85,7 +85,6 @@ export default function MCPConnectPage() {
       );
     }
   }, [redirectToSignIn]);
-
   const completeConnection = useCallback(async () => {
     if (!oauth || connecting) {
       return;
@@ -104,65 +103,44 @@ export default function MCPConnectPage() {
       }
 
       /*
-       * IMPORTANT:
+       * Use a native browser form POST instead of fetch().
        *
-       * We do NOT call the MCP server directly from the browser.
+       * The Next.js /mcp/connect/complete route will perform the
+       * server-to-server OAuth completion and return the ChatGPT
+       * redirect URL.
        *
-       * The backend's /oauth/complete endpoint intentionally returns
-       * a redirect to ChatGPT. A browser fetch() would follow that
-       * cross-origin redirect as AJAX and trigger CORS.
-       *
-       * Instead, send the authenticated OAuth transaction to our
-       * same-origin Next.js route. That route talks server-to-server
-       * with the MCP server and then redirects the browser.
+       * Native navigation avoids the cross-origin fetch/CORS problem
+       * we previously hit with chatgpt.com.
        */
-      const response = await fetch("/mcp/connect/complete", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          ...oauth,
-          clerk_token: clerkToken,
-        }),
-        cache: "no-store",
-      });
+      const form = document.createElement("form");
 
-      if (!response.ok) {
-        let message = `Connection failed (${response.status}).`;
+      form.method = "POST";
+      form.action = "/mcp/connect/complete";
+      form.style.display = "none";
 
-        try {
-          const data = (await response.json()) as {
-            detail?: string;
-            message?: string;
-          };
-
-          message = data.detail || data.message || message;
-        } catch {
-          // Keep default error.
-        }
-
-        throw new Error(message);
-      }
-
-      const data = (await response.json()) as {
-        redirect_url?: string;
+      const fields: Record<string, string> = {
+        client_id: oauth.client_id,
+        redirect_uri: oauth.redirect_uri,
+        scope: oauth.scope,
+        state: oauth.state || "",
+        code_challenge: oauth.code_challenge || "",
+        code_challenge_method: oauth.code_challenge_method || "S256",
+        clerk_token: clerkToken,
       };
 
-      if (!data.redirect_url) {
-        throw new Error(
-          "Umon approved the connection but did not return a ChatGPT redirect.",
-        );
+      for (const [name, value] of Object.entries(fields)) {
+        const input = document.createElement("input");
+
+        input.type = "hidden";
+        input.name = name;
+        input.value = value;
+
+        form.appendChild(input);
       }
 
-      /*
-       * TOP-LEVEL navigation to ChatGPT.
-       *
-       * This is a browser navigation, not fetch(), so ChatGPT does
-       * not need to provide CORS headers to your Umon origin.
-       */
-      window.location.assign(data.redirect_url);
+      document.body.appendChild(form);
+
+      form.submit();
     } catch (err) {
       setConnecting(false);
 
