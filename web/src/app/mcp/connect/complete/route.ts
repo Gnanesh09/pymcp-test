@@ -7,6 +7,7 @@ type OAuthCompleteBody = {
   state: string;
   code_challenge: string;
   code_challenge_method: string;
+  resource: string;
   clerk_token: string;
 };
 
@@ -15,6 +16,8 @@ const MCP_SERVER_URL = (
   process.env.NEXT_PUBLIC_MCP_BASE_URL ||
   "http://localhost:8002"
 ).replace(/\/$/, "");
+
+const MCP_RESOURCE_URL = `${MCP_SERVER_URL}/mcp`;
 
 const CHATGPT_HOSTS = new Set(["chatgpt.com", "chat.openai.com"]);
 
@@ -31,6 +34,7 @@ export async function POST(request: Request) {
       code_challenge_method: String(
         form.get("code_challenge_method") || "S256",
       ),
+      resource: String(form.get("resource") || MCP_RESOURCE_URL),
       clerk_token: String(form.get("clerk_token") || ""),
     };
 
@@ -38,7 +42,8 @@ export async function POST(request: Request) {
       !body.client_id ||
       !body.redirect_uri ||
       !body.clerk_token ||
-      !body.code_challenge
+      !body.code_challenge ||
+      !body.resource
     ) {
       return NextResponse.json(
         {
@@ -53,6 +58,17 @@ export async function POST(request: Request) {
      * somewhere unexpected.
      */
     const redirect = new URL(body.redirect_uri);
+
+    const expectedResource = MCP_RESOURCE_URL;
+
+    if (body.resource !== expectedResource) {
+      return NextResponse.json(
+        {
+          detail: "Invalid OAuth resource.",
+        },
+        { status: 400 },
+      );
+    }
 
     if (!CHATGPT_HOSTS.has(redirect.hostname.toLowerCase())) {
       return NextResponse.json(
@@ -76,6 +92,7 @@ export async function POST(request: Request) {
         state: body.state || null,
         code_challenge: body.code_challenge || null,
         code_challenge_method: body.code_challenge_method || "S256",
+        resource: body.resource,
         clerk_token: body.clerk_token,
       }),
       redirect: "manual",
@@ -151,12 +168,11 @@ export async function POST(request: Request) {
     );
 
     /*
-     * Return JSON because the client is performing a native top-level
-     * navigation after receiving this response.
+     * Native top-level redirect. The browser navigates directly to the
+     * ChatGPT OAuth callback. This must NOT be returned as JSON because
+     * the form submission is a browser navigation, not fetch().
      */
-    return NextResponse.json({
-      redirect_url: location,
-    });
+    return NextResponse.redirect(finalUrl, 303);
   } catch (error) {
     console.error("Umon OAuth completion route failed:", error);
 

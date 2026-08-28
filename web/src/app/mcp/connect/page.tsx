@@ -12,6 +12,10 @@ import {
   WalletCards,
 } from "lucide-react";
 
+const MCP_PUBLIC_RESOURCE = (
+  process.env.NEXT_PUBLIC_MCP_BASE_URL || "http://localhost:8002"
+).replace(/\/$/, "");
+
 type OAuthParams = {
   client_id: string;
   redirect_uri: string;
@@ -19,6 +23,7 @@ type OAuthParams = {
   state: string;
   code_challenge: string;
   code_challenge_method: string;
+  resource: string;
 };
 
 function readOAuthParams(): OAuthParams | null {
@@ -35,6 +40,7 @@ function readOAuthParams(): OAuthParams | null {
   const code_challenge = search.get("code_challenge")?.trim() ?? "";
   const code_challenge_method =
     search.get("code_challenge_method")?.trim() || "S256";
+  const resource = search.get("resource")?.trim() || "";
 
   if (!client_id || !redirect_uri) {
     return null;
@@ -47,6 +53,7 @@ function readOAuthParams(): OAuthParams | null {
     state,
     code_challenge,
     code_challenge_method,
+    resource,
   };
 }
 
@@ -125,6 +132,7 @@ export default function MCPConnectPage() {
         state: oauth.state || "",
         code_challenge: oauth.code_challenge || "",
         code_challenge_method: oauth.code_challenge_method || "S256",
+        resource: oauth.resource || `${MCP_PUBLIC_RESOURCE}/mcp`,
         clerk_token: clerkToken,
       };
 
