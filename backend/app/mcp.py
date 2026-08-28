@@ -1918,24 +1918,32 @@ async def oauth_token(
 # MCP STREAMABLE HTTP
 # ============================================================
 
-
 def _transport_host_values() -> list[str]:
     parsed = urlparse(MCP_PUBLIC_URL)
+
     host = parsed.hostname or "localhost"
-    netloc = parsed.netloc or "localhost:8002"
 
     values = {
-        netloc,
         host,
+        f"{host}:443",
+        "localhost",
         "localhost:8002",
+        "127.0.0.1",
         "127.0.0.1:8002",
     }
+
+    if parsed.netloc:
+        values.add(parsed.netloc)
 
     if parsed.port:
         values.add(f"{host}:{parsed.port}")
 
-    return sorted(values)
+    # Render / reverse-proxy deployments may send the public hostname
+    # without an explicit port.
+    if host.endswith(".onrender.com"):
+        values.add(host)
 
+    return sorted(values)
 
 transport_security = TransportSecuritySettings(
     enable_dns_rebinding_protection=True,
