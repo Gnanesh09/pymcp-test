@@ -2105,6 +2105,7 @@ from urllib.parse import urlencode, urlparse
 import jwt
 from pydantic import BaseModel, Field
 from fastmcp import Context, FastMCP
+from fastmcp.server.dependencies import get_http_headers
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -2166,6 +2167,35 @@ PRODUCT_UI_URI = "ui://umon/product-catalogue.html"
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
+
+def _as_utc_datetime(value: Any) -> datetime | None:
+    """
+    Normalize Mongo/PyMongo datetime values to timezone-aware UTC.
+    """
+    if not isinstance(value, datetime):
+        return None
+
+    if value.tzinfo is None:
+        return value.replace(
+            tzinfo=timezone.utc
+        )
+
+    return value.astimezone(
+        timezone.utc
+    )
+
+
+def _token_datetime_is_valid(
+    expires_at: Any,
+) -> bool:
+    normalized = _as_utc_datetime(
+        expires_at
+    )
+
+    if normalized is None:
+        return False
+
+    return normalized > utc_now()
 
 async def _cleanup_oauth() -> None:
     db = get_db()
@@ -2274,17 +2304,26 @@ async def _ensure_active_user(
 # MCP AUTHORIZATION
 # ============================================================
 
+async def _resolve_mcp_user(ctx: Context | None = None) -> str:
+    """
+    Resolve the authenticated Umon user from the FastMCP HTTP bearer token.
 
-async def _resolve_mcp_user(ctx: Context) -> str:
-    headers = ctx.headers or {}
-    authorization = headers.get("authorization", "")
+    FastMCP does not expose HTTP headers as ``ctx.headers``. The supported
+    HTTP helper is ``get_http_headers()``.
+    """
+    headers = get_http_headers(include_all=True) or {}
+
+    authorization = (
+        headers.get("authorization")
+        or headers.get("Authorization")
+        or ""
+    ).strip()
 
     if not authorization.lower().startswith("bearer "):
-        raise PermissionError(
-            "Umon authentication is required."
-        )
+        raise PermissionError("Umon authentication is required.")
 
     bearer = authorization[7:].strip()
+
     if not bearer:
         raise PermissionError("Empty bearer token.")
 
@@ -2292,27 +2331,44 @@ async def _resolve_mcp_user(ctx: Context) -> str:
     db = get_db()
 
     oauth_token = await db.mcp_oauth_tokens.find_one(
-        {"token_hash": _hash(bearer)}
+        {
+            "token_hash": _hash(bearer),
+            "resource": MCP_ENDPOINT,
+        }
     )
 
     if oauth_token:
-        expires_at = oauth_token.get("expires_at")
-        if not isinstance(expires_at, datetime) or expires_at <= utc_now():
-            raise PermissionError("Umon MCP access token expired.")
+        if not _token_datetime_is_valid(
+            oauth_token.get("expires_at")
+        ):
+            raise PermissionError(
+                "Umon MCP access token expired."
+            )
 
-        user_id = str(oauth_token["clerk_user_id"])
+        user_id = str(
+            oauth_token["clerk_user_id"]
+        )
+
         await _ensure_active_user(user_id)
+
         return user_id
 
-    # Local development / MCP Inspector convenience: allow a valid Clerk JWT
-    # directly. ChatGPT will use the opaque OAuth token above.
+    # Local MCP Inspector convenience:
+    # allow a valid Clerk JWT directly.
     try:
         claims = await _verify_clerk_token(bearer)
         user_id = str(claims["sub"])
-        await _ensure_active_user(user_id, claims)
+
+        await _ensure_active_user(
+            user_id,
+            claims,
+        )
+
         return user_id
     except HTTPException as exc:
-        raise PermissionError(str(exc.detail)) from exc
+        raise PermissionError(
+            str(exc.detail)
+        ) from exc
 
 
 async def _user(ctx: Context) -> str:
@@ -3279,10 +3335,10 @@ async def get_my_activity(
     }
 
 
+
 # ============================================================
 # OAUTH MODELS
 # ============================================================
-
 
 class OAuthRegisterBody(BaseModel):
     client_name: str = "ChatGPT"
@@ -3306,6 +3362,7 @@ class OAuthCompleteBody(BaseModel):
     state: str | None = None
     code_challenge: str | None = None
     code_challenge_method: str | None = None
+    resource: str = MCP_ENDPOINT
     clerk_token: str
 
 
@@ -3317,12 +3374,12 @@ class OAuthTokenBody(BaseModel):
     redirect_uri: str | None = None
     code_verifier: str | None = None
     refresh_token: str | None = None
+    resource: str | None = None
 
 
 # ============================================================
 # OAUTH HELPERS
 # ============================================================
-
 
 def _valid_redirect_uri(uri: str) -> bool:
     try:
@@ -3341,151 +3398,30 @@ def _valid_redirect_uri(uri: str) -> bool:
     if host in {"chatgpt.com", "chat.openai.com"}:
         return True
 
-    # Local Umon frontend is also valid for the consent bridge.
+    # Umon frontend is valid only as the consent bridge.
     return uri.startswith(FRONTEND_URL)
 
 
-def _redirect_with_params(
-    redirect_uri: str,
-    **params: str,
-) -> RedirectResponse:
-    encoded = urlencode(
-        {
-            key: value
-            for key, value in params.items()
-            if value is not None
-        }
-    )
-
-    separator = "&" if "?" in redirect_uri else "?"
-    return RedirectResponse(
-        f"{redirect_uri}{separator}{encoded}",
-        status_code=302,
-    )
-
-
-def _pkce_s256(verifier: str) -> str:
-    digest = hashlib.sha256(
-        verifier.encode("utf-8")
-    ).digest()
-
-    return base64.urlsafe_b64encode(
-        digest
-    ).rstrip(b"=").decode("ascii")
-
-def _resource_is_valid(resource: str) -> bool:
-    """
-    OAuth protected-resource validation.
-
-    Umon exposes exactly one protected MCP resource:
-        https://<mcp-host>/mcp
-
-    The resource must match the configured MCP endpoint exactly.
-    """
-    if not resource:
+def _chatgpt_redirect_ok(uri: str) -> bool:
+    try:
+        parsed = urlparse(uri)
+    except Exception:
         return False
 
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower()
+        in {"chatgpt.com", "chat.openai.com"}
+        and bool(parsed.path)
+    )
+
+
+def _resource_is_valid(resource: str | None) -> bool:
+    if not resource:
+        return False
     return resource.rstrip("/") == MCP_ENDPOINT.rstrip("/")
 
 
-def _chatgpt_redirect_ok(redirect_uri: str) -> bool:
-    """
-    Only allow OAuth callbacks that belong to ChatGPT/OpenAI.
-
-    ChatGPT connector callbacks currently use chatgpt.com.
-    chat.openai.com is retained for compatibility.
-    """
-    if not redirect_uri:
-        return False
-
-    try:
-        parsed = urlparse(redirect_uri)
-    except Exception:
-        return False
-
-    if parsed.scheme != "https":
-        return False
-
-    host = (parsed.hostname or "").lower()
-
-    if host not in {
-        "chatgpt.com",
-        "chat.openai.com",
-    }:
-        return False
-
-    # The callback must have a real path.
-    return bool(parsed.path)
-
-
-# ============================================================
-# OAUTH MODELS
-# ============================================================
-
-
-class OAuthRegisterBody(BaseModel):
-    client_name: str = "ChatGPT"
-    redirect_uris: list[str] = Field(min_length=1)
-    grant_types: list[str] = Field(
-        default_factory=lambda: [
-            "authorization_code",
-            "refresh_token",
-        ]
-    )
-    response_types: list[str] = Field(
-        default_factory=lambda: ["code"]
-    )
-    token_endpoint_auth_method: str = "none"
-
-
-class OAuthCompleteBody(BaseModel):
-    client_id: str
-    redirect_uri: str
-    scope: str = MCP_SCOPE
-    state: str | None = None
-    code_challenge: str | None = None
-    code_challenge_method: str | None = None
-    resource: str = MCP_ENDPOINT
-    clerk_token: str
-
-
-class OAuthTokenBody(BaseModel):
-    grant_type: str
-    client_id: str
-    client_secret: str | None = None
-    code: str | None = None
-    redirect_uri: str | None = None
-    code_verifier: str | None = None
-    refresh_token: str | None = None
-    resource: str | None = None
-
-
-# ============================================================
-# OAUTH HELPERS
-# ============================================================
-
-
-def _valid_redirect_uri(uri: str) -> bool:
-    try:
-        parsed = urlparse(uri)
-    except Exception:
-        return False
-
-    if parsed.scheme not in {"http", "https"}:
-        return False
-
-    host = (parsed.hostname or "").lower()
-
-    if host in {"localhost", "127.0.0.1"}:
-        return True
-
-    if host in {"chatgpt.com", "chat.openai.com"}:
-        return True
-
-    # Local Umon frontend is also valid for the consent bridge.
-    return uri.startswith(FRONTEND_URL)
-
-
 def _redirect_with_params(
     redirect_uri: str,
     **params: str,
@@ -3499,6 +3435,7 @@ def _redirect_with_params(
     )
 
     separator = "&" if "?" in redirect_uri else "?"
+
     return RedirectResponse(
         f"{redirect_uri}{separator}{encoded}",
         status_code=302,
@@ -3513,106 +3450,6 @@ def _pkce_s256(verifier: str) -> str:
     return base64.urlsafe_b64encode(
         digest
     ).rstrip(b"=").decode("ascii")
-
-
-
-
-# ============================================================
-# OAUTH MODELS
-# ============================================================
-
-
-class OAuthRegisterBody(BaseModel):
-    client_name: str = "ChatGPT"
-    redirect_uris: list[str] = Field(min_length=1)
-    grant_types: list[str] = Field(
-        default_factory=lambda: [
-            "authorization_code",
-            "refresh_token",
-        ]
-    )
-    response_types: list[str] = Field(
-        default_factory=lambda: ["code"]
-    )
-    token_endpoint_auth_method: str = "none"
-
-
-class OAuthCompleteBody(BaseModel):
-    client_id: str
-    redirect_uri: str
-    scope: str = MCP_SCOPE
-    state: str | None = None
-    code_challenge: str | None = None
-    code_challenge_method: str | None = None
-    resource: str = MCP_ENDPOINT
-    clerk_token: str
-
-
-class OAuthTokenBody(BaseModel):
-    grant_type: str
-    client_id: str
-    client_secret: str | None = None
-    code: str | None = None
-    redirect_uri: str | None = None
-    code_verifier: str | None = None
-    refresh_token: str | None = None
-    resource: str | None = None
-
-
-# ============================================================
-# OAUTH HELPERS
-# ============================================================
-
-
-def _valid_redirect_uri(uri: str) -> bool:
-    try:
-        parsed = urlparse(uri)
-    except Exception:
-        return False
-
-    if parsed.scheme not in {"http", "https"}:
-        return False
-
-    host = (parsed.hostname or "").lower()
-
-    if host in {"localhost", "127.0.0.1"}:
-        return True
-
-    if host in {"chatgpt.com", "chat.openai.com"}:
-        return True
-
-    # Local Umon frontend is also valid for the consent bridge.
-    return uri.startswith(FRONTEND_URL)
-
-
-def _redirect_with_params(
-    redirect_uri: str,
-    **params: str,
-) -> RedirectResponse:
-    encoded = urlencode(
-        {
-            key: value
-            for key, value in params.items()
-            if value is not None
-        }
-    )
-
-    separator = "&" if "?" in redirect_uri else "?"
-    return RedirectResponse(
-        f"{redirect_uri}{separator}{encoded}",
-        status_code=302,
-    )
-
-
-def _pkce_s256(verifier: str) -> str:
-    digest = hashlib.sha256(
-        verifier.encode("utf-8")
-    ).digest()
-
-    return base64.urlsafe_b64encode(
-        digest
-    ).rstrip(b"=").decode("ascii")
-
 
 # ============================================================
 # OAUTH / CUSTOM HTTP ROUTES
@@ -4140,13 +3977,7 @@ async def oauth_token(
             "expires_at"
         )
 
-        if (
-            not isinstance(
-                expires_at,
-                datetime,
-            )
-            or expires_at <= utc_now()
-        ):
+        if not _token_datetime_is_valid(expires_at):
             raise HTTPException(
                 status_code=400,
                 detail="Authorization code expired.",
@@ -4303,13 +4134,7 @@ async def oauth_token(
             "expires_at"
         )
 
-        if (
-            not isinstance(
-                expires_at,
-                datetime,
-            )
-            or expires_at <= utc_now()
-        ):
+        if not _token_datetime_is_valid(expires_at):
             raise HTTPException(
                 status_code=400,
                 detail="Refresh token expired.",
