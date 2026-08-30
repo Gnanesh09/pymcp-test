@@ -4,5 +4,5 @@ pydantic-settings>=2.10,<3
 pymongo>=4.13,<5
 PyJWT[crypto]>=2.10,<3
 httpx>=0.28,<1
-mcp>=2,<3
-fastmcp[server]>=2,<3
+fastmcp==3.4.7
+mcp>=1.24.0,<2.0
