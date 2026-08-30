@@ -2088,7 +2088,7 @@ Money boundary:
     policy, balance, inventory, order, ledger and audit operations.
 
 Run as a dedicated MCP process during development:
-    uvicorn app.mcp:app --reload --port 8002
+    python -m app.mcp
 
 Your normal Umon API can continue to run on port 8001.
 """
@@ -2099,19 +2099,16 @@ import base64
 import hashlib
 import os
 import secrets
-from typing import Any, AsyncIterator
+from typing import Any, AsyncGenerator
 from urllib.parse import urlencode, urlparse
 
 import jwt
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from jwt import PyJWKClient
 from pydantic import BaseModel, Field
-
-from mcp.server.apps import Apps
-from mcp.server.mcpserver import Context, MCPServer
-from mcp.server.transport_security import TransportSecuritySettings
+from fastmcp import Context, FastMCP
+from starlette.exceptions import HTTPException
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from jwt import PyJWKClient
 
 from .config import settings
 from .db import lifespan as db_lifespan
@@ -2384,8 +2381,22 @@ def _error(
 # MCP SERVER
 # ============================================================
 
-mcp = MCPServer(
-    MCP_APP_NAME,
+# ============================================================
+# FASTMCP APPLICATION LIFESPAN
+# ============================================================
+
+@asynccontextmanager
+async def app_lifespan(server: FastMCP) -> AsyncGenerator[None, None]:
+    """
+    Reuse Umon's existing MongoDB startup/shutdown lifecycle.
+    FastMCP owns the HTTP transport lifecycle.
+    """
+    async with db_lifespan(server):
+        yield
+
+
+mcp = FastMCP(
+    name=MCP_APP_NAME,
     instructions=(
         "Umon Mart makes this merchant sellable to AI buyers. "
         "Use live catalog data before making product claims. "
@@ -2397,88 +2408,7 @@ mcp = MCPServer(
         "Never invent payment success. "
         "Only call checkout after clear user authorization."
     ),
-)
-
-
-# ============================================================
-# APPS UI — preserving the working pattern from the old project
-# ============================================================
-
-apps = Apps()
-
-
-PRODUCT_UI_HTML = """
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<style>
-:root { color-scheme: light; }
-body {
-  margin: 0;
-  padding: 18px;
-  background: #f8fafc;
-  color: #0f172a;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-}
-.header {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-.title { font-weight: 750; font-size: 18px; letter-spacing: -.02em; }
-.sub { color: #64748b; font-size: 12px; margin-top: 4px; }
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 10px;
-}
-.card {
-  overflow: hidden;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  background: #fff;
-}
-.image {
-  width: 100%;
-  aspect-ratio: 1.1;
-  object-fit: cover;
-  background: #f1f5f9;
-}
-.content { padding: 12px; }
-.name { font-weight: 700; font-size: 13px; }
-.meta { color: #64748b; font-size: 11px; margin-top: 3px; }
-.price { margin-top: 9px; font-weight: 800; font-size: 15px; }
-.stock { margin-top: 4px; color: #64748b; font-size: 10px; }
-</style>
-</head>
-<body>
-<div class="header">
-  <div>
-    <div class="title">Umon Mart</div>
-    <div class="sub">Live products selected by the merchant</div>
-  </div>
-</div>
-<div id="app" class="grid"></div>
-<script>
-  // The tool result is rendered by the ChatGPT Apps host.
-  // This resource is intentionally display-only. Mutations are executed by
-  // typed MCP tools so every action still passes the backend authorization
-  // and audit layer.
-</script>
-</body>
-</html>
-"""
-
-apps.add_html_resource(
-    PRODUCT_UI_URI,
-    PRODUCT_UI_HTML,
-    name="umon-product-catalogue",
-    title="Umon Mart Product Catalogue",
-    description="Live merchant catalogue for AI-assisted shopping.",
-    prefers_border=True,
+    lifespan=app_lifespan,
 )
 
 
@@ -2590,14 +2520,6 @@ async def get_agent_spending(
 # ============================================================
 
 @mcp.tool()
-@apps.tool(
-    resource_uri=PRODUCT_UI_URI,
-    title="Search Umon Products",
-    description=(
-        "Search Umon Mart's live merchant catalogue and return current "
-        "product offers for the user."
-    ),
-)
 async def search_offers(
     query: str = "",
     category: str | None = None,
@@ -3451,90 +3373,310 @@ def _pkce_s256(verifier: str) -> str:
         digest
     ).rstrip(b"=").decode("ascii")
 
+def _resource_is_valid(resource: str) -> bool:
+    """
+    OAuth protected-resource validation.
+
+    Umon exposes exactly one protected MCP resource:
+        https://<mcp-host>/mcp
+
+    The resource must match the configured MCP endpoint exactly.
+    """
+    if not resource:
+        return False
+
+    return resource.rstrip("/") == MCP_ENDPOINT.rstrip("/")
+
+
+def _chatgpt_redirect_ok(redirect_uri: str) -> bool:
+    """
+    Only allow OAuth callbacks that belong to ChatGPT/OpenAI.
+
+    ChatGPT connector callbacks currently use chatgpt.com.
+    chat.openai.com is retained for compatibility.
+    """
+    if not redirect_uri:
+        return False
+
+    try:
+        parsed = urlparse(redirect_uri)
+    except Exception:
+        return False
+
+    if parsed.scheme != "https":
+        return False
+
+    host = (parsed.hostname or "").lower()
+
+    if host not in {
+        "chatgpt.com",
+        "chat.openai.com",
+    }:
+        return False
+
+    # The callback must have a real path.
+    return bool(parsed.path)
+
 
 # ============================================================
-# FASTAPI LIFESPAN
+# OAUTH MODELS
 # ============================================================
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Reuse the same production-tested Umon DB startup/index/seed lifecycle.
-    async with db_lifespan(app):
-        yield
+
+class OAuthRegisterBody(BaseModel):
+    client_name: str = "ChatGPT"
+    redirect_uris: list[str] = Field(min_length=1)
+    grant_types: list[str] = Field(
+        default_factory=lambda: [
+            "authorization_code",
+            "refresh_token",
+        ]
+    )
+    response_types: list[str] = Field(
+        default_factory=lambda: ["code"]
+    )
+    token_endpoint_auth_method: str = "none"
 
 
-app = FastAPI(
-    title="Umon Mart MCP",
-    version=MCP_APP_VERSION,
-    description="Remote MCP server for Umon agentic commerce.",
-    lifespan=lifespan,
-)
+class OAuthCompleteBody(BaseModel):
+    client_id: str
+    redirect_uri: str
+    scope: str = MCP_SCOPE
+    state: str | None = None
+    code_challenge: str | None = None
+    code_challenge_method: str | None = None
+    resource: str = MCP_ENDPOINT
+    clerk_token: str
 
 
-# ============================================================
-# CORS
-# ============================================================
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        FRONTEND_URL,
-        "https://chatgpt.com",
-        "https://chat.openai.com",
-    ],
-    allow_credentials=True,
-    allow_methods=[
-        "GET",
-        "POST",
-        "OPTIONS",
-    ],
-    allow_headers=[
-        "*",
-    ],
-    expose_headers=[
-        "Mcp-Session-Id",
-    ],
-)
+class OAuthTokenBody(BaseModel):
+    grant_type: str
+    client_id: str
+    client_secret: str | None = None
+    code: str | None = None
+    redirect_uri: str | None = None
+    code_verifier: str | None = None
+    refresh_token: str | None = None
+    resource: str | None = None
 
 
 # ============================================================
-# ROOT / HEALTH
+# OAUTH HELPERS
 # ============================================================
 
-@app.get("/")
-async def root() -> dict[str, Any]:
-    return {
-        "name": MCP_APP_NAME,
-        "version": MCP_APP_VERSION,
-        "status": "online",
-        "mcp": MCP_ENDPOINT,
-        "oauth": f"{MCP_PUBLIC_URL}/oauth/authorize",
-    }
+
+def _valid_redirect_uri(uri: str) -> bool:
+    try:
+        parsed = urlparse(uri)
+    except Exception:
+        return False
+
+    if parsed.scheme not in {"http", "https"}:
+        return False
+
+    host = (parsed.hostname or "").lower()
+
+    if host in {"localhost", "127.0.0.1"}:
+        return True
+
+    if host in {"chatgpt.com", "chat.openai.com"}:
+        return True
+
+    # Local Umon frontend is also valid for the consent bridge.
+    return uri.startswith(FRONTEND_URL)
 
 
-@app.get("/health")
-async def health() -> dict[str, Any]:
+def _redirect_with_params(
+    redirect_uri: str,
+    **params: str,
+) -> RedirectResponse:
+    encoded = urlencode(
+        {
+            key: value
+            for key, value in params.items()
+            if value is not None
+        }
+    )
+
+    separator = "&" if "?" in redirect_uri else "?"
+    return RedirectResponse(
+        f"{redirect_uri}{separator}{encoded}",
+        status_code=302,
+    )
+
+
+def _pkce_s256(verifier: str) -> str:
+    digest = hashlib.sha256(
+        verifier.encode("utf-8")
+    ).digest()
+
+    return base64.urlsafe_b64encode(
+        digest
+    ).rstrip(b"=").decode("ascii")
+
+
+
+
+# ============================================================
+# OAUTH MODELS
+# ============================================================
+
+
+class OAuthRegisterBody(BaseModel):
+    client_name: str = "ChatGPT"
+    redirect_uris: list[str] = Field(min_length=1)
+    grant_types: list[str] = Field(
+        default_factory=lambda: [
+            "authorization_code",
+            "refresh_token",
+        ]
+    )
+    response_types: list[str] = Field(
+        default_factory=lambda: ["code"]
+    )
+    token_endpoint_auth_method: str = "none"
+
+
+class OAuthCompleteBody(BaseModel):
+    client_id: str
+    redirect_uri: str
+    scope: str = MCP_SCOPE
+    state: str | None = None
+    code_challenge: str | None = None
+    code_challenge_method: str | None = None
+    resource: str = MCP_ENDPOINT
+    clerk_token: str
+
+
+class OAuthTokenBody(BaseModel):
+    grant_type: str
+    client_id: str
+    client_secret: str | None = None
+    code: str | None = None
+    redirect_uri: str | None = None
+    code_verifier: str | None = None
+    refresh_token: str | None = None
+    resource: str | None = None
+
+
+# ============================================================
+# OAUTH HELPERS
+# ============================================================
+
+
+def _valid_redirect_uri(uri: str) -> bool:
+    try:
+        parsed = urlparse(uri)
+    except Exception:
+        return False
+
+    if parsed.scheme not in {"http", "https"}:
+        return False
+
+    host = (parsed.hostname or "").lower()
+
+    if host in {"localhost", "127.0.0.1"}:
+        return True
+
+    if host in {"chatgpt.com", "chat.openai.com"}:
+        return True
+
+    # Local Umon frontend is also valid for the consent bridge.
+    return uri.startswith(FRONTEND_URL)
+
+
+def _redirect_with_params(
+    redirect_uri: str,
+    **params: str,
+) -> RedirectResponse:
+    encoded = urlencode(
+        {
+            key: value
+            for key, value in params.items()
+            if value is not None
+        }
+    )
+
+    separator = "&" if "?" in redirect_uri else "?"
+    return RedirectResponse(
+        f"{redirect_uri}{separator}{encoded}",
+        status_code=302,
+    )
+
+
+def _pkce_s256(verifier: str) -> str:
+    digest = hashlib.sha256(
+        verifier.encode("utf-8")
+    ).digest()
+
+    return base64.urlsafe_b64encode(
+        digest
+    ).rstrip(b"=").decode("ascii")
+
+
+# ============================================================
+# OAUTH / CUSTOM HTTP ROUTES
+# ============================================================
+
+async def _read_request_payload(request: Request) -> dict[str, Any]:
+    content_type = (request.headers.get("content-type") or "").lower()
+
+    if "application/json" in content_type:
+        data = await request.json()
+        return data if isinstance(data, dict) else {}
+
+    if "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        return {str(k): str(v) for k, v in form.items()}
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        return {str(k): str(v) for k, v in form.items()}
+
+    try:
+        data = await request.json()
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _registered_client(client_id: str) -> dict[str, Any] | None:
+    return await get_db().mcp_oauth_clients.find_one(
+        {"client_id": client_id}
+    )
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
     try:
         await get_db().command("ping")
-        mongo_ok = True
-    except Exception:
-        mongo_ok = False
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "status": "degraded",
+                "service": MCP_APP_NAME,
+                "mongodb": False,
+                "error": str(exc),
+            },
+            status_code=503,
+        )
 
-    return {
-        "status": "ok" if mongo_ok else "degraded",
-        "service": MCP_APP_NAME,
-        "mongodb": mongo_ok,
-        "mcp_endpoint": MCP_ENDPOINT,
-        "oauth_enabled": True,
-    }
+    return JSONResponse(
+        {
+            "status": "ok",
+            "service": MCP_APP_NAME,
+            "mongodb": True,
+            "mcp_endpoint": MCP_ENDPOINT,
+            "oauth_enabled": True,
+        }
+    )
 
 
-# ============================================================
-# OAUTH DISCOVERY
-# ============================================================
-
-@app.get("/.well-known/oauth-protected-resource")
-async def oauth_protected_resource() -> JSONResponse:
+@mcp.custom_route(
+    "/.well-known/oauth-protected-resource",
+    methods=["GET"],
+)
+async def oauth_protected_resource(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "resource": MCP_ENDPOINT,
@@ -3545,19 +3687,35 @@ async def oauth_protected_resource() -> JSONResponse:
     )
 
 
-@app.get("/.well-known/oauth-protected-resource/mcp")
-async def oauth_protected_resource_mcp() -> JSONResponse:
-    return await oauth_protected_resource()
+@mcp.custom_route(
+    "/.well-known/oauth-protected-resource/mcp",
+    methods=["GET"],
+)
+async def oauth_protected_resource_mcp(
+    request: Request,
+) -> JSONResponse:
+    return await oauth_protected_resource(request)
 
 
-@app.get("/.well-known/oauth-authorization-server")
-async def oauth_authorization_server() -> JSONResponse:
+@mcp.custom_route(
+    "/.well-known/oauth-authorization-server",
+    methods=["GET"],
+)
+async def oauth_authorization_server(
+    request: Request,
+) -> JSONResponse:
     return JSONResponse(
         {
             "issuer": MCP_PUBLIC_URL,
-            "authorization_endpoint": f"{MCP_PUBLIC_URL}/oauth/authorize",
-            "token_endpoint": f"{MCP_PUBLIC_URL}/oauth/token",
-            "registration_endpoint": f"{MCP_PUBLIC_URL}/oauth/register",
+            "authorization_endpoint": (
+                f"{MCP_PUBLIC_URL}/oauth/authorize"
+            ),
+            "token_endpoint": (
+                f"{MCP_PUBLIC_URL}/oauth/token"
+            ),
+            "registration_endpoint": (
+                f"{MCP_PUBLIC_URL}/oauth/register"
+            ),
             "response_types_supported": ["code"],
             "grant_types_supported": [
                 "authorization_code",
@@ -3570,33 +3728,76 @@ async def oauth_authorization_server() -> JSONResponse:
     )
 
 
-# ============================================================
-# DYNAMIC CLIENT REGISTRATION
-# ============================================================
-
-@app.post("/oauth/register")
+@mcp.custom_route("/oauth/register", methods=["POST"])
 async def oauth_register(
-    body: OAuthRegisterBody,
+    request: Request,
 ) -> JSONResponse:
-    for redirect_uri in body.redirect_uris:
-        if not _valid_redirect_uri(redirect_uri):
+    await _cleanup_oauth()
+
+    data = await _read_request_payload(request)
+
+    client_name = str(
+        data.get("client_name") or "ChatGPT"
+    )
+
+    redirect_uris = data.get("redirect_uris") or []
+
+    if isinstance(redirect_uris, str):
+        redirect_uris = [redirect_uris]
+
+    grant_types = data.get(
+        "grant_types"
+    ) or ["authorization_code", "refresh_token"]
+
+    if isinstance(grant_types, str):
+        grant_types = [grant_types]
+
+    response_types = data.get(
+        "response_types"
+    ) or ["code"]
+
+    if isinstance(response_types, str):
+        response_types = [response_types]
+
+    token_endpoint_auth_method = str(
+        data.get("token_endpoint_auth_method")
+        or "none"
+    )
+
+    if not redirect_uris:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one redirect URI is required.",
+        )
+
+    for redirect_uri in redirect_uris:
+        if not _valid_redirect_uri(str(redirect_uri)):
             raise HTTPException(
                 status_code=400,
-                detail=f"Redirect URI is not allowed: {redirect_uri}",
+                detail=(
+                    "Redirect URI is not allowed: "
+                    f"{redirect_uri}"
+                ),
             )
 
     db = get_db()
-    client_id = f"umon_client_{secrets.token_urlsafe(24)}"
+    client_id = (
+        "umon_client_"
+        + secrets.token_urlsafe(24)
+    )
 
     await db.mcp_oauth_clients.insert_one(
         {
             "_id": client_id,
             "client_id": client_id,
-            "client_name": body.client_name,
-            "redirect_uris": body.redirect_uris,
-            "grant_types": body.grant_types,
-            "response_types": body.response_types,
-            "token_endpoint_auth_method": body.token_endpoint_auth_method,
+            "client_name": client_name,
+            "redirect_uris": [
+                str(uri)
+                for uri in redirect_uris
+            ],
+            "grant_types": grant_types,
+            "response_types": response_types,
+            "token_endpoint_auth_method": "none",
             "created_at": utc_now(),
         }
     )
@@ -3604,66 +3805,108 @@ async def oauth_register(
     return JSONResponse(
         {
             "client_id": client_id,
-            "client_name": body.client_name,
-            "redirect_uris": body.redirect_uris,
-            "grant_types": body.grant_types,
-            "response_types": body.response_types,
-            "token_endpoint_auth_method": body.token_endpoint_auth_method,
-        }
+            "client_name": client_name,
+            "redirect_uris": [
+                str(uri)
+                for uri in redirect_uris
+            ],
+            "grant_types": grant_types,
+            "response_types": response_types,
+            "token_endpoint_auth_method": "none",
+        },
+        status_code=201,
     )
 
 
-# ============================================================
-# AUTHORIZATION ENDPOINT
-# ============================================================
-
-@app.get("/oauth/authorize", response_class=HTMLResponse)
-async def oauth_authorize(request: Request) -> HTMLResponse:
+@mcp.custom_route("/oauth/authorize", methods=["GET"])
+async def oauth_authorize(
+    request: Request,
+) -> RedirectResponse:
     params = request.query_params
 
     client_id = params.get("client_id", "")
     redirect_uri = params.get("redirect_uri", "")
-    response_type = params.get("response_type", "code")
-    scope = params.get("scope", MCP_SCOPE)
-    state = params.get("state") or ""
-    code_challenge = params.get("code_challenge") or ""
-    code_challenge_method = (
-        params.get("code_challenge_method") or ""
+    response_type = params.get(
+        "response_type",
+        "code",
     )
+    scope = params.get(
+        "scope",
+        MCP_SCOPE,
+    )
+    state = params.get("state") or ""
+    code_challenge = params.get(
+        "code_challenge"
+    ) or ""
+    code_challenge_method = params.get(
+        "code_challenge_method"
+    ) or ""
+    resource = params.get(
+        "resource"
+    ) or MCP_ENDPOINT
 
     if response_type != "code":
-        return HTMLResponse(
-            "Unsupported OAuth response_type.",
+        raise HTTPException(
             status_code=400,
+            detail="Only response_type=code is supported.",
         )
 
     if not client_id:
-        return HTMLResponse(
-            "Missing OAuth client_id.",
+        raise HTTPException(
             status_code=400,
+            detail="Missing OAuth client_id.",
         )
 
-    if not _valid_redirect_uri(redirect_uri):
-        return HTMLResponse(
-            "Redirect URI is not allowed.",
+    if not redirect_uri or not _valid_redirect_uri(
+        redirect_uri
+    ):
+        raise HTTPException(
             status_code=400,
+            detail="Redirect URI is not allowed.",
         )
 
-    db = get_db()
-    client = await db.mcp_oauth_clients.find_one(
-        {"client_id": client_id}
-    )
+    if not _resource_is_valid(resource):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid OAuth resource.",
+        )
 
-    if client and redirect_uri not in client.get(
+    scopes = set(scope.split())
+    if MCP_SCOPE not in scopes:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported OAuth scope.",
+        )
+
+    if code_challenge_method not in {
+        "",
+        "S256",
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PKCE S256 is supported.",
+        )
+
+    client = await _registered_client(client_id)
+
+    if not client:
+        raise HTTPException(
+            status_code=400,
+            detail="Unknown OAuth client.",
+        )
+
+    if redirect_uri not in client.get(
         "redirect_uris",
         [],
     ):
-        return HTMLResponse(
-            "Redirect URI is not registered for this client.",
+        raise HTTPException(
             status_code=400,
+            detail=(
+                "Redirect URI is not registered "
+                "for this client."
+            ),
         )
 
-    # Preserve OAuth parameters while moving the browser to Umon's Clerk UI.
     query = urlencode(
         {
             "client_id": client_id,
@@ -3671,79 +3914,106 @@ async def oauth_authorize(request: Request) -> HTMLResponse:
             "scope": scope,
             "state": state,
             "code_challenge": code_challenge,
-            "code_challenge_method": code_challenge_method,
+            "code_challenge_method": (
+                code_challenge_method or "S256"
+            ),
+            "resource": resource,
         }
     )
 
-    connect_url = f"{FRONTEND_URL}/mcp/connect?{query}"
-
-    html = f"""
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Connect Umon Mart</title>
-<style>
-body{{margin:0;background:#f8fafc;color:#0f172a;font-family:Inter,system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;padding:20px}}
-.card{{width:min(470px,100%);background:white;border:1px solid #e2e8f0;border-radius:24px;padding:30px;box-shadow:0 20px 60px rgba(15,23,42,.10)}}
-.mark{{width:44px;height:44px;display:grid;place-items:center;border-radius:13px;background:#0f172a;color:#fff;font-weight:800}}
-h1{{margin:22px 0 8px;font-size:28px;letter-spacing:-.03em}}
-p{{margin:0;color:#64748b;line-height:1.55}}
-.scope{{margin:22px 0;padding:16px;border-radius:15px;background:#f8fafc;color:#475569;font-size:13px;line-height:1.7}}
-.scope strong{{display:block;color:#0f172a;margin-bottom:4px}}
-a{{display:block;background:#0f172a;color:white;text-align:center;text-decoration:none;border-radius:12px;padding:13px 16px;font-weight:750}}
-small{{display:block;margin-top:13px;color:#94a3b8;font-size:11px;line-height:1.5}}
-</style>
-</head>
-<body>
-<div class="card">
-<div class="mark">U</div>
-<h1>Connect Umon Mart</h1>
-<p>Use your existing Umon Mart account with ChatGPT. Your products, cart and purchasing agents stay tied to the same signed-in user.</p>
-<div class="scope"><strong>ChatGPT will be able to</strong>Search live products<br/>View and update your shared cart<br/>View your purchasing agents and guardrails<br/>Request purchases through an eligible agent</div>
-<a href="{connect_url}">Continue to Umon</a>
-<small>You will sign in with Clerk if needed, then approve the connection. Money actions remain bounded by Umon's merchant and agent policies.</small>
-</div>
-</body>
-</html>
-"""
-
-    return HTMLResponse(html)
-
-
-# ============================================================
-# CLERK CONSENT COMPLETION
-# ============================================================
-
-@app.post("/oauth/complete")
-async def oauth_complete(
-    body: OAuthCompleteBody,
-):
-    if not _valid_redirect_uri(body.redirect_uri):
-        raise HTTPException(
-            status_code=400,
-            detail="Redirect URI is not allowed.",
-        )
-
-    db = get_db()
-    client = await db.mcp_oauth_clients.find_one(
-        {"client_id": body.client_id}
+    return RedirectResponse(
+        f"{FRONTEND_URL}/mcp/connect?{query}",
+        status_code=302,
     )
 
-    if client and body.redirect_uri not in client.get(
+
+@mcp.custom_route("/oauth/complete", methods=["POST"])
+async def oauth_complete(
+    request: Request,
+) -> RedirectResponse:
+    await _cleanup_oauth()
+
+    data = await _read_request_payload(request)
+
+    try:
+        body = OAuthCompleteBody.model_validate(data)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid OAuth completion request: {exc}",
+        ) from exc
+
+    if not _chatgpt_redirect_ok(body.redirect_uri):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "OAuth redirect URI must be "
+                "a ChatGPT callback."
+            ),
+        )
+
+    if body.resource != MCP_ENDPOINT:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid OAuth resource.",
+        )
+
+    client = await _registered_client(body.client_id)
+
+    if not client:
+        raise HTTPException(
+            status_code=400,
+            detail="Unknown OAuth client.",
+        )
+
+    if body.redirect_uri not in client.get(
         "redirect_uris",
         [],
     ):
         raise HTTPException(
             status_code=400,
-            detail="Redirect URI is not registered for this client.",
+            detail=(
+                "Redirect URI is not registered "
+                "for this client."
+            ),
+        )
+
+    if body.scope not in {
+        MCP_SCOPE,
+        f"{MCP_SCOPE} offline_access",
+    }:
+        scopes = set(
+            body.scope.split()
+        )
+        if MCP_SCOPE not in scopes:
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported OAuth scope.",
+            )
+
+    if body.code_challenge_method not in {
+        None,
+        "",
+        "S256",
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PKCE S256 is supported.",
+        )
+
+    if not body.code_challenge:
+        raise HTTPException(
+            status_code=400,
+            detail="PKCE code_challenge is required.",
         )
 
     claims = await _verify_clerk_token(
         body.clerk_token
     )
-    clerk_user_id = str(claims["sub"])
+
+    clerk_user_id = str(
+        claims["sub"]
+    )
 
     await _ensure_active_user(
         clerk_user_id,
@@ -3751,10 +4021,11 @@ async def oauth_complete(
     )
 
     raw_code = (
-        f"umon_code_{secrets.token_urlsafe(32)}"
+        "umon_code_"
+        + secrets.token_urlsafe(32)
     )
 
-    await db.mcp_oauth_codes.insert_one(
+    await get_db().mcp_oauth_codes.insert_one(
         {
             "_id": _hash(raw_code),
             "code_hash": _hash(raw_code),
@@ -3762,9 +4033,14 @@ async def oauth_complete(
             "redirect_uri": body.redirect_uri,
             "clerk_user_id": clerk_user_id,
             "scope": body.scope,
+            "resource": body.resource,
             "code_challenge": body.code_challenge,
-            "code_challenge_method": body.code_challenge_method,
-            "expires_at": utc_now() + timedelta(
+            "code_challenge_method": (
+                body.code_challenge_method
+                or "S256"
+            ),
+            "expires_at": utc_now()
+            + timedelta(
                 seconds=OAUTH_CODE_TTL_SECONDS
             ),
             "created_at": utc_now(),
@@ -3778,6 +4054,7 @@ async def oauth_complete(
         metadata={
             "client_id": body.client_id,
             "scope": body.scope,
+            "resource": body.resource,
         },
     )
 
@@ -3788,15 +4065,44 @@ async def oauth_complete(
     )
 
 
-# ============================================================
-# TOKEN ENDPOINT
-# ============================================================
-
-@app.post("/oauth/token")
+@mcp.custom_route("/oauth/token", methods=["POST"])
 async def oauth_token(
-    body: OAuthTokenBody,
+    request: Request,
 ) -> JSONResponse:
     await _cleanup_oauth()
+
+    data = await _read_request_payload(request)
+
+    try:
+        body = OAuthTokenBody.model_validate(data)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid OAuth token request: {exc}",
+        ) from exc
+
+    if not body.client_id:
+        raise HTTPException(
+            status_code=400,
+            detail="client_id is required.",
+        )
+
+    if body.resource and body.resource != MCP_ENDPOINT:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid OAuth resource.",
+        )
+
+    client = await _registered_client(
+        body.client_id
+    )
+
+    if not client:
+        raise HTTPException(
+            status_code=400,
+            detail="Unknown OAuth client.",
+        )
+
     db = get_db()
 
     if body.grant_type == "authorization_code":
@@ -3806,72 +4112,115 @@ async def oauth_token(
                 detail="Authorization code is required.",
             )
 
-        code_record = await db.mcp_oauth_codes.find_one_and_delete(
-            {
-                "code_hash": _hash(body.code),
-                "client_id": body.client_id,
-            }
+        if not body.code_verifier:
+            raise HTTPException(
+                status_code=400,
+                detail="code_verifier is required.",
+            )
+
+        code_record = (
+            await db.mcp_oauth_codes.find_one_and_delete(
+                {
+                    "code_hash": _hash(body.code),
+                    "client_id": body.client_id,
+                }
+            )
         )
 
         if not code_record:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid or expired authorization code.",
+                detail=(
+                    "Invalid or expired "
+                    "authorization code."
+                ),
             )
 
-        if body.redirect_uri and body.redirect_uri != code_record.get(
-            "redirect_uri"
+        expires_at = code_record.get(
+            "expires_at"
+        )
+
+        if (
+            not isinstance(
+                expires_at,
+                datetime,
+            )
+            or expires_at <= utc_now()
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Authorization code expired.",
+            )
+
+        if (
+            body.redirect_uri
+            and body.redirect_uri
+            != code_record.get("redirect_uri")
         ):
             raise HTTPException(
                 status_code=400,
                 detail="OAuth redirect URI mismatch.",
             )
 
+        stored_resource = code_record.get(
+            "resource",
+            MCP_ENDPOINT,
+        )
+
+        if (
+            body.resource
+            and body.resource
+            != stored_resource
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="OAuth resource mismatch.",
+            )
+
         challenge = code_record.get(
             "code_challenge"
         )
 
-        if challenge:
-            if not body.code_verifier:
-                raise HTTPException(
-                    status_code=400,
-                    detail="PKCE code_verifier is required.",
-                )
-
-            method = code_record.get(
-                "code_challenge_method"
+        if challenge and not secrets.compare_digest(
+            _pkce_s256(body.code_verifier),
+            str(challenge),
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="PKCE verification failed.",
             )
 
-            if method not in {None, "", "S256"}:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Only S256 PKCE is supported.",
-                )
-
-            if not secrets.compare_digest(
-                _pkce_s256(body.code_verifier),
-                challenge,
-            ):
-                raise HTTPException(
-                    status_code=400,
-                    detail="PKCE verification failed.",
-                )
-
         raw_access_token = (
-            f"umon_mcp_{secrets.token_urlsafe(40)}"
+            "umon_mcp_"
+            + secrets.token_urlsafe(40)
         )
+
         raw_refresh_token = (
-            f"umon_refresh_{secrets.token_urlsafe(40)}"
+            "umon_refresh_"
+            + secrets.token_urlsafe(40)
+        )
+
+        scope = code_record.get(
+            "scope",
+            MCP_SCOPE,
         )
 
         await db.mcp_oauth_tokens.insert_one(
             {
                 "_id": _hash(raw_access_token),
-                "token_hash": _hash(raw_access_token),
-                "client_id": code_record["client_id"],
-                "clerk_user_id": code_record["clerk_user_id"],
-                "scope": code_record.get("scope", MCP_SCOPE),
-                "expires_at": utc_now() + timedelta(
+                "token_hash": _hash(
+                    raw_access_token
+                ),
+                "client_id": code_record[
+                    "client_id"
+                ],
+                "clerk_user_id": code_record[
+                    "clerk_user_id"
+                ],
+                "scope": scope,
+                "resource": stored_resource,
+                "expires_at": utc_now()
+                + timedelta(
                     seconds=OAUTH_ACCESS_TTL_SECONDS
                 ),
                 "created_at": utc_now(),
@@ -3881,11 +4230,19 @@ async def oauth_token(
         await db.mcp_oauth_refresh_tokens.insert_one(
             {
                 "_id": _hash(raw_refresh_token),
-                "token_hash": _hash(raw_refresh_token),
-                "client_id": code_record["client_id"],
-                "clerk_user_id": code_record["clerk_user_id"],
-                "scope": code_record.get("scope", MCP_SCOPE),
-                "expires_at": utc_now() + timedelta(
+                "token_hash": _hash(
+                    raw_refresh_token
+                ),
+                "client_id": code_record[
+                    "client_id"
+                ],
+                "clerk_user_id": code_record[
+                    "clerk_user_id"
+                ],
+                "scope": scope,
+                "resource": stored_resource,
+                "expires_at": utc_now()
+                + timedelta(
                     seconds=OAUTH_REFRESH_TTL_SECONDS
                 ),
                 "created_at": utc_now(),
@@ -3893,27 +4250,32 @@ async def oauth_token(
         )
 
         await audit(
-            owner_clerk_user_id=code_record["clerk_user_id"],
+            owner_clerk_user_id=code_record[
+                "clerk_user_id"
+            ],
             action="MCP_ACCESS_TOKEN_ISSUED",
             result="SUCCESS",
             metadata={
-                "client_id": code_record["client_id"],
-                "scope": code_record.get("scope", MCP_SCOPE),
+                "client_id": body.client_id,
+                "scope": scope,
+                "resource": stored_resource,
             },
         )
 
-        return JSONResponse(
+        response = JSONResponse(
             {
                 "access_token": raw_access_token,
                 "token_type": "Bearer",
                 "expires_in": OAUTH_ACCESS_TTL_SECONDS,
                 "refresh_token": raw_refresh_token,
-                "scope": code_record.get(
-                    "scope",
-                    MCP_SCOPE,
-                ),
+                "scope": scope,
             }
         )
+
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+
+        return response
 
     if body.grant_type == "refresh_token":
         if not body.refresh_token:
@@ -3937,86 +4299,128 @@ async def oauth_token(
                 detail="Invalid refresh token.",
             )
 
-        expires_at = refresh.get("expires_at")
-        if not isinstance(expires_at, datetime) or expires_at <= utc_now():
+        expires_at = refresh.get(
+            "expires_at"
+        )
+
+        if (
+            not isinstance(
+                expires_at,
+                datetime,
+            )
+            or expires_at <= utc_now()
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="Refresh token expired.",
             )
 
+        stored_resource = refresh.get(
+            "resource",
+            MCP_ENDPOINT,
+        )
+
+        if body.resource and body.resource != stored_resource:
+            raise HTTPException(
+                status_code=400,
+                detail="OAuth resource mismatch.",
+            )
+
         raw_access_token = (
-            f"umon_mcp_{secrets.token_urlsafe(40)}"
+            "umon_mcp_"
+            + secrets.token_urlsafe(40)
+        )
+
+        scope = refresh.get(
+            "scope",
+            MCP_SCOPE,
         )
 
         await db.mcp_oauth_tokens.insert_one(
             {
                 "_id": _hash(raw_access_token),
-                "token_hash": _hash(raw_access_token),
-                "client_id": refresh["client_id"],
-                "clerk_user_id": refresh["clerk_user_id"],
-                "scope": refresh.get("scope", MCP_SCOPE),
-                "expires_at": utc_now() + timedelta(
+                "token_hash": _hash(
+                    raw_access_token
+                ),
+                "client_id": refresh[
+                    "client_id"
+                ],
+                "clerk_user_id": refresh[
+                    "clerk_user_id"
+                ],
+                "scope": scope,
+                "resource": stored_resource,
+                "expires_at": utc_now()
+                + timedelta(
                     seconds=OAUTH_ACCESS_TTL_SECONDS
                 ),
                 "created_at": utc_now(),
             }
         )
 
-        return JSONResponse(
+        response = JSONResponse(
             {
                 "access_token": raw_access_token,
                 "token_type": "Bearer",
                 "expires_in": OAUTH_ACCESS_TTL_SECONDS,
-                "scope": refresh.get("scope", MCP_SCOPE),
+                "scope": scope,
             }
         )
 
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+
+        return response
+
     raise HTTPException(
         status_code=400,
-        detail="Unsupported grant_type.",
+        detail=(
+            "Unsupported grant_type: "
+            f"{body.grant_type}"
+        ),
+    )
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def root(request: Request) -> JSONResponse:
+    return JSONResponse(
+        {
+            "name": MCP_APP_NAME,
+            "version": MCP_APP_VERSION,
+            "status": "online",
+            "mcp": MCP_ENDPOINT,
+            "oauth": f"{MCP_PUBLIC_URL}/oauth/authorize",
+        }
     )
 
 
 # ============================================================
-# MCP STREAMABLE HTTP
+# START SERVER
 # ============================================================
 
+def main() -> None:
+    host = os.getenv(
+        "HOST",
+        "0.0.0.0",
+    )
+    port = int(
+        os.getenv(
+            "PORT",
+            "8002",
+        )
+    )
 
-def _transport_host_values() -> list[str]:
-    parsed = urlparse(MCP_PUBLIC_URL)
-    host = parsed.hostname or "localhost"
-    netloc = parsed.netloc or "localhost:8002"
+    print(
+        f"Starting {MCP_APP_NAME} "
+        f"on http://{host}:{port}/mcp"
+    )
 
-    values = {
-        netloc,
-        host,
-        "localhost:8002",
-        "127.0.0.1:8002",
-    }
-
-    if parsed.port:
-        values.add(f"{host}:{parsed.port}")
-
-    return sorted(values)
+    mcp.run(
+        transport="http",
+        host=host,
+        port=port,
+    )
 
 
-transport_security = TransportSecuritySettings(
-    enable_dns_rebinding_protection=True,
-    allowed_hosts=_transport_host_values(),
-    allowed_origins=[
-        FRONTEND_URL,
-        "https://chatgpt.com",
-        "https://chat.openai.com",
-    ],
-)
-
-mcp_http_app = mcp.streamable_http_app(
-    streamable_http_path="/",
-    json_response=True,
-    transport_security=transport_security,
-)
-
-app.mount(
-    "/mcp",
-    mcp_http_app,
-)
+if __name__ == "__main__":
+    main()
