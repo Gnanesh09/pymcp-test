@@ -31,6 +31,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import base64
 import hashlib
+import json
 import os
 import secrets
 from typing import Any, AsyncGenerator
@@ -39,6 +40,7 @@ from urllib.parse import urlencode, urlparse
 import jwt
 from pydantic import BaseModel, Field
 from fastmcp import Context, FastMCP
+from fastmcp.apps import AppConfig, ResourceCSP
 from fastmcp.server.dependencies import get_http_headers
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
@@ -64,6 +66,7 @@ from .services import (
     search_products as service_search_products,
     update_cart_item as service_update_cart_item,
 )
+from .langgraph_agent import graph_description, run_shopping_assistant
 
 
 # ============================================================
@@ -1288,6 +1291,588 @@ async def get_my_activity(
     }
 
 
+
+
+# ============================================================
+# LANGGRAPH + CHATGPT APP UI
+# ============================================================
+
+STORE_UI_URI = "ui://umon/store.html"
+CART_UI_URI = "ui://umon/cart.html"
+CHECKOUT_UI_URI = "ui://umon/checkout.html"
+ORDER_UI_URI = "ui://umon/order.html"
+
+
+def _ui_content_payload(data: dict[str, Any]) -> str:
+    return json.dumps(
+        _safe_json(data),
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def _app_ui_html(title: str, mode: str) -> str:
+    # MCP Apps sends the tool result to the iframe via the official
+    # @modelcontextprotocol/ext-apps bridge. The HTML is intentionally
+    # self-contained except for the small SDK import.
+    escaped_title = (
+        title.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{escaped_title}</title>
+<style>
+:root {{
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}}
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0;
+  background: #f8fafc;
+  color: #0f172a;
+}}
+.wrap {{
+  width: 100%;
+  padding: 16px;
+}}
+.card {{
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 18px;
+  overflow: hidden;
+}}
+.head {{
+  padding: 16px 18px;
+  border-bottom: 1px solid #eef2f7;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}}
+.brand {{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}}
+.logo {{
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: #0f172a;
+  color: white;
+  font-weight: 800;
+}}
+h1 {{
+  font-size: 15px;
+  margin: 0;
+  font-weight: 750;
+}}
+.sub {{
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}}
+.body {{
+  padding: 16px 18px;
+}}
+.grid {{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 10px;
+}}
+.product {{
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 10px;
+}}
+.product img {{
+  width: 100%;
+  aspect-ratio: 1.2;
+  object-fit: cover;
+  border-radius: 10px;
+  background: #f1f5f9;
+}}
+.name {{
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 8px;
+}}
+.meta {{
+  font-size: 10px;
+  color: #64748b;
+  margin-top: 3px;
+}}
+.price {{
+  font-size: 13px;
+  font-weight: 800;
+  margin-top: 7px;
+}}
+.pill {{
+  display: inline-flex;
+  margin-top: 7px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 9px;
+  font-weight: 700;
+}}
+.row {{
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 12px;
+}}
+.row:last-child {{ border-bottom: 0; }}
+.muted {{ color: #64748b; }}
+.total {{
+  font-size: 16px;
+  font-weight: 800;
+}}
+.status {{
+  display: inline-flex;
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+}}
+.ok {{ background: #ecfdf5; color: #047857; }}
+.warn {{ background: #fffbeb; color: #b45309; }}
+.bad {{ background: #fef2f2; color: #b91c1c; }}
+.reason {{
+  margin-top: 12px;
+  padding: 11px 12px;
+  background: #f8fafc;
+  border-radius: 12px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #475569;
+}}
+.empty {{
+  padding: 30px 10px;
+  text-align: center;
+  color: #64748b;
+  font-size: 12px;
+}}
+.full {{ grid-column: 1 / -1; }}
+@media (max-width: 520px) {{
+  .grid {{ grid-template-columns: 1fr; }}
+}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div id="root"></div>
+</div>
+<script type="module">
+import {{ App }} from "https://unpkg.com/@modelcontextprotocol/ext-apps@0.4.0/app-with-deps";
+
+const app = new App({{
+  name: "Umon Mart",
+  version: "1.0.0",
+}});
+
+function money(paise) {{
+  return "₹" + (Number(paise || 0) / 100).toLocaleString("en-IN", {{
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }});
+}}
+
+function escapeHtml(value) {{
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}}
+
+function productCard(p) {{
+  const image = p.image
+    ? `<img src="${{escapeHtml(p.image)}}" alt="">`
+    : "";
+
+  return `<article class="product">
+    ${{image}}
+    <div class="name">${{escapeHtml(p.name)}}</div>
+    <div class="meta">${{escapeHtml(p.brand || "")}} · ${{escapeHtml(p.category || "")}}</div>
+    <div class="price">${{money(p.price_paise)}}</div>
+    ${{p.stock !== undefined ? `<span class="pill">${{Number(p.stock) > 0 ? "In stock" : "Out of stock"}}</span>` : ""}}
+  </article>`;
+}}
+
+function render(payload) {{
+  const root = document.getElementById("root");
+  const data = payload?.structuredContent || payload?.data || payload || {{}};
+
+  if ("products" in data || "suggestions" in data) {{
+    const products = data.products || data.suggestions || [];
+    root.innerHTML = `
+      <div class="card">
+        <div class="head">
+          <div class="brand">
+            <div class="logo">U</div>
+            <div><h1>Umon Mart</h1><div class="sub">${{escapeHtml(data.title || "Products for you")}}</div></div>
+          </div>
+          <span class="status ok">${{products.length}} options</span>
+        </div>
+        <div class="body">
+          ${{products.length ? `<div class="grid">${{products.map(productCard).join("")}}</div>` : `<div class="empty">No matching products right now.</div>`}}
+        </div>
+      </div>`;
+    return;
+  }}
+
+  if (data.cart) {{
+    const cart = data.cart;
+    root.innerHTML = `
+      <div class="card">
+        <div class="head">
+          <div class="brand"><div class="logo">U</div><div><h1>Your Umon cart</h1><div class="sub">Shared cart</div></div></div>
+          <span class="status ok">${{Number(cart.item_count || cart.items?.length || 0)}} items</span>
+        </div>
+        <div class="body">
+          ${{(cart.items || []).map(i => `
+            <div class="row"><span>${{escapeHtml(i.name)}} × ${{i.quantity}}</span><strong>${{money(i.line_total_paise)}}</strong></div>
+          `).join("")}}
+          <div class="row"><span class="muted">Subtotal</span><span>${{money(cart.subtotal_paise)}}</span></div>
+          <div class="row"><span class="muted">Delivery</span><span>${{money(cart.delivery_fee_paise)}}</span></div>
+          <div class="row"><span class="total">Total</span><span class="total">${{money(cart.total_paise)}}</span></div>
+        </div>
+      </div>`;
+    return;
+  }}
+
+  if (data.checkout) {{
+    const c = data.checkout;
+    const p = c.policy || {{}};
+    const status = p.decision === "ALLOW" ? "ok" : (p.decision === "CONFIRM" ? "warn" : "bad");
+    root.innerHTML = `
+      <div class="card">
+        <div class="head">
+          <div class="brand"><div class="logo">U</div><div><h1>Checkout review</h1><div class="sub">No money moved by this preview</div></div></div>
+          <span class="status ${{status}}">${{escapeHtml(p.decision || "BLOCK")}}</span>
+        </div>
+        <div class="body">
+          <div class="row"><span class="muted">Agent</span><strong>${{escapeHtml(c.agent?.name || "—")}}</strong></div>
+          <div class="row"><span class="muted">Cart total</span><strong>${{money(c.cart?.total_paise)}}</strong></div>
+          <div class="row"><span class="muted">Available</span><span>${{money(c.agent?.balance_available_paise)}}</span></div>
+          <div class="row"><span class="muted">Transaction limit</span><span>${{money(c.agent?.policy?.max_transaction_paise)}}</span></div>
+          <div class="reason">${{escapeHtml(p.reason || "Review the decision before continuing.")}}</div>
+        </div>
+      </div>`;
+    return;
+  }}
+
+  if (data.order) {{
+    const o = data.order;
+    root.innerHTML = `
+      <div class="card">
+        <div class="head">
+          <div class="brand"><div class="logo">U</div><div><h1>Umon order</h1><div class="sub">${{escapeHtml(o.id || "")}}</div></div></div>
+          <span class="status ${{o.payment_status === "PAID" ? "ok" : "warn"}}">${{escapeHtml(o.payment_status || o.status || "UNKNOWN")}}</span>
+        </div>
+        <div class="body">
+          <div class="row"><span class="muted">Amount</span><strong>${{money(o.amount_paise)}}</strong></div>
+          <div class="row"><span class="muted">Payment</span><span>${{escapeHtml(o.payment_method || "—")}}</span></div>
+          <div class="row"><span class="muted">Order status</span><span>${{escapeHtml(o.status || "—")}}</span></div>
+        </div>
+      </div>`;
+    return;
+  }}
+
+  root.innerHTML = `<div class="card"><div class="empty">Umon result received.</div></div>`;
+}}
+
+app.ontoolresult = (result) => render(result);
+app.connect();
+</script>
+</body>
+</html>"""
+
+
+@mcp.resource(
+    STORE_UI_URI,
+    app=AppConfig(
+        csp=ResourceCSP(
+            resource_domains=[
+                "https://unpkg.com",
+            ],
+        ),
+    ),
+)
+def store_ui() -> str:
+    return _app_ui_html(
+        "Umon Mart",
+        "store",
+    )
+
+
+@mcp.resource(
+    CART_UI_URI,
+    app=AppConfig(
+        csp=ResourceCSP(
+            resource_domains=[
+                "https://unpkg.com",
+            ],
+        ),
+    ),
+)
+def cart_ui() -> str:
+    return _app_ui_html(
+        "Umon Cart",
+        "cart",
+    )
+
+
+@mcp.resource(
+    CHECKOUT_UI_URI,
+    app=AppConfig(
+        csp=ResourceCSP(
+            resource_domains=[
+                "https://unpkg.com",
+            ],
+        ),
+    ),
+)
+def checkout_ui() -> str:
+    return _app_ui_html(
+        "Umon Checkout",
+        "checkout",
+    )
+
+
+@mcp.resource(
+    ORDER_UI_URI,
+    app=AppConfig(
+        csp=ResourceCSP(
+            resource_domains=[
+                "https://unpkg.com",
+            ],
+        ),
+    ),
+)
+def order_ui() -> str:
+    return _app_ui_html(
+        "Umon Order",
+        "order",
+    )
+
+
+@mcp.tool(
+    app=AppConfig(
+        resource_uri=STORE_UI_URI,
+        prefers_border=True,
+    )
+)
+async def shopping_assist(
+    intent: str,
+    budget: float | None = None,
+    category: str | None = None,
+    selected_agent_id: str | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """
+    Umon's agentic shopping planner.
+
+    Understand a shopping goal, inspect the user's shared cart, discover live
+    merchant offers, find relevant complementary products, and build a small
+    recommendation plan. This tool never spends money and never adds to cart.
+    """
+    if ctx is None:
+        raise RuntimeError(
+            "MCP context is required."
+        )
+
+    user_id = await _user(ctx)
+
+    if budget is not None and budget < 0:
+        return _error(
+            "INVALID_BUDGET",
+            "Budget cannot be negative.",
+        )
+
+    result = await run_shopping_assistant(
+        user_id=user_id,
+        intent=intent,
+        budget_paise=(
+            round(budget * 100)
+            if budget is not None
+            else None
+        ),
+        category=category,
+        selected_agent_id=selected_agent_id,
+    )
+
+    await audit(
+        owner_clerk_user_id=user_id,
+        action="MCP_SHOPPING_ASSISTED",
+        result="SUCCESS",
+        agent_id=selected_agent_id,
+        metadata={
+            "intent": intent,
+            "budget_paise": (
+                round(budget * 100)
+                if budget is not None
+                else None
+            ),
+            "category": category,
+            "suggestion_total_paise":
+                result.get(
+                    "suggestion_total_paise",
+                    0,
+                ),
+            "graph":
+                graph_description(),
+        },
+    )
+
+    return {
+        "success": True,
+        "mode": "RECOMMENDATION_ONLY",
+        "title": "Umon shopping suggestions",
+        "intent": intent,
+        "budget_paise": (
+            round(budget * 100)
+            if budget is not None
+            else None
+        ),
+        "suggestions": result.get(
+            "suggestion_items",
+            [],
+        ),
+        "cross_sell": result.get(
+            "recommendations",
+            [],
+        ),
+        "suggestion_total_paise":
+            result.get(
+                "suggestion_total_paise",
+                0,
+            ),
+        "suggestion_total":
+            _money(
+                result.get(
+                    "suggestion_total_paise",
+                    0,
+                )
+            ),
+        "cart":
+            result.get("cart", {}),
+        "agent":
+            _safe_agent(
+                result["agent"]
+            )
+            if result.get("agent")
+            else None,
+        "agent_spending":
+            _safe_json(
+                result.get(
+                    "agent_spending"
+                )
+            ),
+        "warnings":
+            result.get(
+                "warnings",
+                [],
+            ),
+        "explanation":
+            result.get(
+                "explanation",
+                "",
+            ),
+        "graph": graph_description(),
+        "next_action":
+            result.get(
+                "next_action",
+                "present_recommendations",
+            ),
+        "money_movement":
+            False,
+    }
+
+
+@mcp.tool(
+    app=AppConfig(
+        resource_uri=CART_UI_URI,
+        prefers_border=True,
+    )
+)
+async def show_cart(
+    ctx: Context,
+) -> dict[str, Any]:
+    """Render the authenticated user's shared Umon cart in ChatGPT."""
+    user_id = await _user(ctx)
+    cart = await service_get_cart(user_id)
+
+    return {
+        "success": True,
+        "cart": cart,
+        "money_movement": False,
+    }
+
+
+@mcp.tool(
+    app=AppConfig(
+        resource_uri=CHECKOUT_UI_URI,
+        prefers_border=True,
+    )
+)
+async def review_checkout(
+    agent_id: str,
+    confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """
+    Render an authoritative, read-only checkout review.
+
+    This calls the existing Umon validation path; it does not move money.
+    """
+    if ctx is None:
+        raise RuntimeError(
+            "MCP context is required."
+        )
+
+    result = await validate_checkout(
+        agent_id=agent_id,
+        confirmed=confirmed,
+        ctx=ctx,
+    )
+
+    return {
+        "success": True,
+        "checkout": result,
+        "money_movement": False,
+    }
+
+
+@mcp.tool(
+    app=AppConfig(
+        resource_uri=ORDER_UI_URI,
+        prefers_border=True,
+    )
+)
+async def show_order(
+    order_id: str,
+    ctx: Context,
+) -> dict[str, Any]:
+    """Render a user's current order/payment state in ChatGPT."""
+    return await get_order_status(
+        order_id=order_id,
+        ctx=ctx,
+    )
 
 # ============================================================
 # OAUTH MODELS
