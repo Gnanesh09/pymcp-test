@@ -89,6 +89,11 @@ MCP_PUBLIC_URL = os.getenv(
 
 MCP_ENDPOINT = f"{MCP_PUBLIC_URL}/mcp"
 
+UMON_WIDGET_DOMAIN = os.getenv(
+    "UMON_WIDGET_DOMAIN",
+    MCP_PUBLIC_URL,
+).strip().rstrip("/")
+
 OAUTH_CODE_TTL_SECONDS = 120
 OAUTH_ACCESS_TTL_SECONDS = 3600
 OAUTH_REFRESH_TTL_SECONDS = 60 * 60 * 24 * 30
@@ -1476,7 +1481,7 @@ h1 {{
 <div id="root"></div>
 </div>
 <script type="module">
-import {{ App }} from "https://unpkg.com/@modelcontextprotocol/ext-apps@0.4.0/app-with-deps";
+import {{ App }} from "https://unpkg.com/@modelcontextprotocol/ext-apps@1.1.2/app-with-deps";
 
 const app = new App({{
   name: "Umon Mart",
@@ -1513,18 +1518,48 @@ function productCard(p) {{
   </article>`;
 }}
 
-function render(payload) {{
-  const root = document.getElementById("root");
-  const data = payload?.structuredContent || payload?.data || payload || {{}};
+function normalizeToolResult(result) {{
+  // MCP Apps delivers a CallToolResult object. Depending on the host/server
+  // adapter, structuredContent may be present directly, or the payload may
+  // arrive as JSON inside a text content block.
+  if (!result) return {{}};
 
-  if ("products" in data || "suggestions" in data) {{
-    const products = data.products || data.suggestions || [];
+  if (result.structuredContent && typeof result.structuredContent === "object") {{
+    return result.structuredContent;
+  }}
+
+  const textBlock = Array.isArray(result.content)
+    ? result.content.find((item) => item?.type === "text" && typeof item.text === "string")
+    : null;
+
+  if (textBlock?.text) {{
+    try {{
+      const parsed = JSON.parse(textBlock.text);
+      if (parsed && typeof parsed === "object") return parsed;
+    }} catch (error) {{
+      console.warn("Umon widget could not parse tool text:", error);
+    }}
+  }}
+
+  if (result.data && typeof result.data === "object") {{
+    return result.data;
+  }}
+
+  return result;
+}}
+
+function render(result) {{
+  const root = document.getElementById("root");
+  const data = normalizeToolResult(result);
+
+  if ("products" in data || "suggestions" in data || "cross_sell" in data) {{
+    const products = data.products || data.suggestions || data.cross_sell || [];
     root.innerHTML = `
       <div class="card">
         <div class="head">
           <div class="brand">
             <div class="logo">U</div>
-            <div><h1>Umon Mart</h1><div class="sub">${{escapeHtml(data.title || "Products for you")}}</div></div>
+            <div><h1>Umon Mart</h1><div class="sub">${{escapeHtml(data.title || data.mode || "Products for you")}}</div></div>
           </div>
           <span class="status ok">${{products.length}} options</span>
         </div>
@@ -1597,7 +1632,12 @@ function render(payload) {{
 }}
 
 app.ontoolresult = (result) => render(result);
-app.connect();
+app.onerror = (error) => {{
+  console.error("Umon Apps error:", error);
+  document.getElementById("root").innerHTML =
+    `<div class="card"><div class="empty">Umon UI could not load this result. Please retry.</div></div>`;
+}};
+await app.connect();
 </script>
 </body>
 </html>"""
@@ -1606,6 +1646,7 @@ app.connect();
 @mcp.resource(
     STORE_UI_URI,
     app=AppConfig(
+        domain=UMON_WIDGET_DOMAIN,
         csp=ResourceCSP(
             resource_domains=[
                 "https://unpkg.com",
@@ -1623,6 +1664,7 @@ def store_ui() -> str:
 @mcp.resource(
     CART_UI_URI,
     app=AppConfig(
+        domain=UMON_WIDGET_DOMAIN,
         csp=ResourceCSP(
             resource_domains=[
                 "https://unpkg.com",
@@ -1640,6 +1682,7 @@ def cart_ui() -> str:
 @mcp.resource(
     CHECKOUT_UI_URI,
     app=AppConfig(
+        domain=UMON_WIDGET_DOMAIN,
         csp=ResourceCSP(
             resource_domains=[
                 "https://unpkg.com",
@@ -1657,6 +1700,7 @@ def checkout_ui() -> str:
 @mcp.resource(
     ORDER_UI_URI,
     app=AppConfig(
+        domain=UMON_WIDGET_DOMAIN,
         csp=ResourceCSP(
             resource_domains=[
                 "https://unpkg.com",
@@ -1674,6 +1718,7 @@ def order_ui() -> str:
 @mcp.tool(
     app=AppConfig(
         resource_uri=STORE_UI_URI,
+        domain=UMON_WIDGET_DOMAIN,
         prefers_border=True,
     )
 )
@@ -1807,6 +1852,7 @@ async def shopping_assist(
 @mcp.tool(
     app=AppConfig(
         resource_uri=CART_UI_URI,
+        domain=UMON_WIDGET_DOMAIN,
         prefers_border=True,
     )
 )
@@ -1827,6 +1873,7 @@ async def show_cart(
 @mcp.tool(
     app=AppConfig(
         resource_uri=CHECKOUT_UI_URI,
+        domain=UMON_WIDGET_DOMAIN,
         prefers_border=True,
     )
 )
@@ -1861,6 +1908,7 @@ async def review_checkout(
 @mcp.tool(
     app=AppConfig(
         resource_uri=ORDER_UI_URI,
+        domain=UMON_WIDGET_DOMAIN,
         prefers_border=True,
     )
 )
