@@ -1,313 +1,92 @@
 <!doctype html>
 <html lang="en">
-
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Umon</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        * {
-            box-sizing: border-box
-        }
-
-        :root {
-            font-family: Poppins, system-ui, sans-serif;
-            color: #111827;
-            background: #fff
-        }
-
-        body {
-            margin: 0;
-            background: #fff;
-            color: #111827
-        }
-
-        .app {
-            width: 100%;
-            max-width: 760px;
-            margin: auto
-        }
-
-        .top {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 10px 12px;
-            border-bottom: 1px solid #eef0f3
-        }
-
-        .brand {
-            display: flex;
-            align-items: center;
-            gap: 8px
-        }
-
-        .logo {
-            width: 28px;
-            height: 28px;
-            border-radius: 8px;
-            background: #111827;
-            color: #fff;
-            display: grid;
-            place-items: center;
-            font-size: 12px;
-            font-weight: 700
-        }
-
-        .title {
-            font-size: 12px;
-            font-weight: 700
-        }
-
-        .sub {
-            font-size: 7px;
-            color: #8a94a6;
-            margin-top: 1px
-        }
-
-        .count,
-        .status {
-            font-size: 7px;
-            font-weight: 700;
-            padding: 4px 7px;
-            border-radius: 999px;
-            background: #f1f5f8;
-            color: #64748b
-        }
-
-        .ok {
-            background: #eafaf2;
-            color: #15803d
-        }
-
-        .warn {
-            background: #fff7df;
-            color: #a16207
-        }
-
-        .bad {
-            background: #fff0f0;
-            color: #dc2626
-        }
-
-        .body {
-            padding: 10px 12px
-        }
-
-        .note {
-            font-size: 7px;
-            line-height: 1.4;
-            color: #667085;
-            background: #f8fafc;
-            border: 1px solid #edf0f3;
-            border-radius: 9px;
-            padding: 7px 8px;
-            margin-bottom: 9px
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 7px
-        }
-
-        .product {
-            display: flex;
-            gap: 8px;
-            border: 1px solid #edf0f3;
-            border-radius: 10px;
-            padding: 6px;
-            min-width: 0
-        }
-
-        .photo {
-            width: 58px;
-            height: 58px;
-            border-radius: 8px;
-            background: #f4f6f8;
-            overflow: hidden;
-            flex: 0 0 58px
-        }
-
-        .photo img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            display: block
-        }
-
-        .fallback {
-            width: 100%;
-            height: 100%;
-            display: grid;
-            place-items: center;
-            font-size: 17px;
-            font-weight: 700;
-            color: #98a2b3
-        }
-
-        .info {
-            min-width: 0;
-            display: flex;
-            flex-direction: column;
-            justify-content: center
-        }
-
-        .name {
-            font-size: 8px;
-            font-weight: 700;
-            line-height: 1.25;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden
-        }
-
-        .meta {
-            font-size: 6.5px;
-            color: #8a94a6;
-            margin-top: 2px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis
-        }
-
-        .price {
-            font-size: 8.5px;
-            font-weight: 700;
-            margin-top: 3px
-        }
-
-        .reason {
-            font-size: 6.5px;
-            color: #667085;
-            line-height: 1.3;
-            margin-top: 2px;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden
-        }
-
-        .add {
-            margin-top: 4px;
-            width: max-content;
-            border: 0;
-            border-radius: 7px;
-            padding: 4px 7px;
-            background: #111827;
-            color: #fff;
-            font: 600 6.5px Poppins;
-            cursor: pointer
-        }
-
-        .add:disabled {
-            opacity: .55
-        }
-
-        .section {
-            margin-top: 10px
-        }
-
-        .section-title {
-            font-size: 8px;
-            font-weight: 700;
-            margin-bottom: 5px
-        }
-
-        .rows {
-            border-top: 1px solid #eef0f3
-        }
-
-        .row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            padding: 7px 0;
-            border-bottom: 1px solid #eef0f3;
-            font-size: 7.5px
-        }
-
-        .item {
-            min-width: 0;
-            display: flex;
-            align-items: center;
-            gap: 7px
-        }
-
-        .item-img {
-            width: 28px;
-            height: 28px;
-            border-radius: 7px;
-            object-fit: cover;
-            background: #f4f6f8;
-            flex: 0 0 28px
-        }
-
-        .item-name {
-            font-size: 7.5px;
-            font-weight: 600;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis
-        }
-
-        .item-meta {
-            font-size: 6.3px;
-            color: #8a94a6;
-            margin-top: 1px
-        }
-
-        .total {
-            font-size: 9.5px;
-            font-weight: 700
-        }
-
-        .muted {
-            color: #8a94a6
-        }
-
-        .foot {
-            margin-top: 7px;
-            font-size: 6px;
-            color: #a0a8b5
-        }
-
-        .empty {
-            text-align: center;
-            padding: 28px 8px;
-            color: #8a94a6;
-            font-size: 8px
-        }
-
-        @media(max-width:560px) {
-            .grid {
-                grid-template-columns: 1fr
-            }
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Umon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}
+:root{font-family:Poppins,system-ui,sans-serif;color:#111827;background:#fff}
+body{margin:0;background:#fff;color:#111827}
+.app{width:100%;max-width:760px;margin:auto}
+.top{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid #eef0f3}
+.brand{display:flex;align-items:center;gap:8px}
+.logo{width:28px;height:28px;border-radius:8px;background:#111827;color:#fff;display:grid;place-items:center;font-size:12px;font-weight:700}
+.title{font-size:12px;font-weight:700}
+.sub{font-size:7px;color:#8a94a6;margin-top:1px}
+.count,.status{font-size:7px;font-weight:700;padding:4px 7px;border-radius:999px;background:#f1f5f8;color:#64748b}
+.ok{background:#eafaf2;color:#15803d}
+.warn{background:#fff7df;color:#a16207}
+.bad{background:#fff0f0;color:#dc2626}
+.body{padding:10px 12px}
+.note{font-size:7px;line-height:1.4;color:#667085;background:#f8fafc;border:1px solid #edf0f3;border-radius:9px;padding:7px 8px;margin-bottom:9px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.product{display:flex;gap:8px;border:1px solid #edf0f3;border-radius:10px;padding:6px;min-width:0}
+.photo{width:58px;height:58px;border-radius:8px;background:#f4f6f8;overflow:hidden;flex:0 0 58px}
+.photo img{width:100%;height:100%;object-fit:cover;display:block}
+.fallback{width:100%;height:100%;display:grid;place-items:center;font-size:17px;font-weight:700;color:#98a2b3}
+.info{min-width:0;display:flex;flex-direction:column;justify-content:center}
+.name{font-size:8px;font-weight:700;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.meta{font-size:6.5px;color:#8a94a6;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.price{font-size:8.5px;font-weight:700;margin-top:3px}
+.reason{font-size:6.5px;color:#667085;line-height:1.3;margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.add{margin-top:4px;width:max-content;border:0;border-radius:7px;padding:4px 7px;background:#111827;color:#fff;font:600 6.5px Poppins;cursor:pointer}
+.add:disabled{opacity:.55}
+.section{margin-top:10px}
+.section-title{font-size:8px;font-weight:700;margin-bottom:5px}
+.rows{border-top:1px solid #eef0f3}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #eef0f3;font-size:7.5px}
+.item{min-width:0;display:flex;align-items:center;gap:7px}
+.item-img{width:28px;height:28px;border-radius:7px;object-fit:cover;background:#f4f6f8;flex:0 0 28px}
+.item-name{font-size:7.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item-meta{font-size:6.3px;color:#8a94a6;margin-top:1px}
+.total{font-size:9.5px;font-weight:700}
+.muted{color:#8a94a6}
+.foot{margin-top:7px;font-size:6px;color:#a0a8b5}
+.empty{text-align:center;padding:28px 8px;color:#8a94a6;font-size:8px}
+@media(max-width:560px){
+  body{font-size:14px}
+  .app{max-width:none}
+  .top{padding:12px 12px}
+  .logo{width:34px;height:34px;font-size:14px}
+  .title{font-size:13px}
+  .sub{font-size:8px}
+  .body{padding:12px}
+  .note{font-size:10px;padding:9px 10px;line-height:1.5}
+  .grid{grid-template-columns:1fr;gap:9px}
+  .product{gap:10px;padding:9px;border-radius:12px}
+  .photo{width:78px;height:78px;flex-basis:78px;border-radius:10px}
+  .name{font-size:11px;line-height:1.3}
+  .meta{font-size:8.5px;margin-top:3px}
+  .price{font-size:11px;margin-top:4px}
+  .reason{font-size:8.5px;line-height:1.4;margin-top:3px}
+  .add{font-size:9px;padding:7px 11px;border-radius:8px;min-height:32px}
+  .count,.status{font-size:8px;padding:5px 8px}
+  .section-title{font-size:10px}
+  .row{padding:9px 0;font-size:10px}
+  .item-img{width:36px;height:36px;flex-basis:36px}
+  .item-name{font-size:10px}
+  .item-meta{font-size:8px}
+  .total{font-size:12px}
+  .foot{font-size:7.5px;line-height:1.4}
+}
+</style>
 </head>
-
 <body>
-    <div class="app">
+<div class="app">
 
-        <div id="root">
-            <div class="empty">Loading…</div>
-        </div>
-    </div>
-    <script type="module">
-        import { App } from "https://unpkg.com/@modelcontextprotocol/ext-apps@1.1.2/app-with-deps";
-        const app = new App({ name: "Umon", version: "1.0.0" }), root = document.getElementById("root");
-        const esc = v => String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
-        const money = v => `₹${(Number(v || 0) / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        const data = r => { if (r?.structuredContent) return r.structuredContent; const t = r?.content?.find(x => x?.type === "text"); if (t) { try { return JSON.parse(t.text) } catch { } } return r?.data || r || {} };
-        function render(r) { const d = data(r), c = d.checkout || d, p = c.policy || {}, decision = p.decision || c.decision || "BLOCK", cls = decision === "ALLOW" ? "ok" : decision === "CONFIRM" ? "warn" : "bad"; const a = c.agent || {}; const total = c.cart?.total_paise ?? c.amount_paise ?? 0; root.innerHTML = `<div class="top"><div class="brand"><div class="logo">U</div><div><div class="title">Checkout review</div><div class="sub">Read-only</div></div></div><span class="status ${cls}">${esc(decision)}</span></div><div class="body"><div class="note"><strong>${esc(p.reason || p.message || "Review the current Umon decision.")}</strong></div><div class="rows"><div class="row"><span class="muted">Cart total</span><strong>${money(total)}</strong></div><div class="row"><span class="muted">Agent</span><span>${esc(a.name || "—")}</span></div><div class="row"><span class="muted">Available</span><span>${money(a.balance_available_paise)}</span></div><div class="row"><span class="muted">Transaction limit</span><span>${money(a.policy?.max_transaction_paise)}</span></div><div class="row"><span class="muted">Money moved</span><strong>No</strong></div></div><div class="foot">${esc(c.next_step || "Only continue after explicit user authorization.")}</div></div>` }
-        app.ontoolresult = render; await app.connect();
-    </script>
-</body>
-
-</html>
+<div id="root"><div class="empty">Loading…</div></div>
+</div>
+<script type="module">
+import {App} from "https://unpkg.com/@modelcontextprotocol/ext-apps@1.1.2/app-with-deps";
+const app=new App({name:"Umon",version:"1.0.0"}),root=document.getElementById("root");
+const esc=v=>String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
+const money=v=>`₹${(Number(v||0)/100).toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+const data=r=>{if(r?.structuredContent)return r.structuredContent;const t=r?.content?.find(x=>x?.type==="text");if(t){try{return JSON.parse(t.text)}catch{}}return r?.data||r||{}};
+function render(r){const d=data(r),c=d.checkout||d,p=c.policy||{},decision=p.decision||c.decision||"BLOCK",cls=decision==="ALLOW"?"ok":decision==="CONFIRM"?"warn":"bad";const a=c.agent||{};const total=c.cart?.total_paise??c.amount_paise??0;root.innerHTML=`<div class="top"><div class="brand"><div class="logo">U</div><div><div class="title">Checkout review</div><div class="sub">Read-only</div></div></div><span class="status ${cls}">${esc(decision)}</span></div><div class="body"><div class="note"><strong>${esc(p.reason||p.message||"Review the current Umon decision.")}</strong></div><div class="rows"><div class="row"><span class="muted">Cart total</span><strong>${money(total)}</strong></div><div class="row"><span class="muted">Agent</span><span>${esc(a.name||"—")}</span></div><div class="row"><span class="muted">Available</span><span>${money(a.balance_available_paise)}</span></div><div class="row"><span class="muted">Transaction limit</span><span>${money(a.policy?.max_transaction_paise)}</span></div><div class="row"><span class="muted">Money moved</span><strong>No</strong></div></div><div class="foot">${esc(c.next_step||"Only continue after explicit user authorization.")}</div></div>`}
+app.ontoolresult=render;await app.connect();
+</script>
+</body></html>
