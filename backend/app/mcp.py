@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import secrets
+from pathlib import Path
 from typing import Any, AsyncGenerator
 from urllib.parse import urlencode, urlparse
 
@@ -99,6 +100,13 @@ OAUTH_ACCESS_TTL_SECONDS = 3600
 OAUTH_REFRESH_TTL_SECONDS = 60 * 60 * 24 * 30
 
 PRODUCT_UI_URI = "ui://umon/product-catalogue.html"
+
+# UI resource identifiers are declared early because catalog/recommendation
+# tools below bind their existing business logic to the visual Store App.
+STORE_UI_URI = "ui://umon/store.html"
+CART_UI_URI = "ui://umon/cart.html"
+CHECKOUT_UI_URI = "ui://umon/checkout.html"
+ORDER_UI_URI = "ui://umon/order.html"
 
 
 # ============================================================
@@ -536,7 +544,9 @@ async def get_agent_spending(
 # CATALOG
 # ============================================================
 
-@mcp.tool()
+@mcp.tool(
+    app=AppConfig(resource_uri=STORE_UI_URI, domain=UMON_WIDGET_DOMAIN, prefers_border=True)
+)
 async def search_offers(
     query: str = "",
     category: str | None = None,
@@ -579,7 +589,9 @@ async def search_offers(
     }
 
 
-@mcp.tool()
+@mcp.tool(
+    app=AppConfig(resource_uri=STORE_UI_URI, domain=UMON_WIDGET_DOMAIN, prefers_border=True)
+)
 async def get_offer(
     product_id: str,
     ctx: Context,
@@ -635,7 +647,9 @@ async def list_categories(ctx: Context) -> dict[str, Any]:
 # CROSS-SELL / UPSELL
 # ============================================================
 
-@mcp.tool()
+@mcp.tool(
+    app=AppConfig(resource_uri=STORE_UI_URI, domain=UMON_WIDGET_DOMAIN, prefers_border=True)
+)
 async def get_recommendations(
     product_id: str,
     ctx: Context,
@@ -662,7 +676,9 @@ async def get_recommendations(
     }
 
 
-@mcp.tool()
+@mcp.tool(
+    app=AppConfig(resource_uri=STORE_UI_URI, domain=UMON_WIDGET_DOMAIN, prefers_border=True)
+)
 async def get_cart_recommendations(
     ctx: Context,
     limit: int = 6,
@@ -1307,6 +1323,12 @@ CART_UI_URI = "ui://umon/cart.html"
 CHECKOUT_UI_URI = "ui://umon/checkout.html"
 ORDER_UI_URI = "ui://umon/order.html"
 
+UI_DIR = Path(__file__).resolve().parent / "ui"
+
+
+def _load_ui_file(filename: str) -> str:
+    return (UI_DIR / filename).read_text(encoding="utf-8")
+
 
 def _ui_content_payload(data: dict[str, Any]) -> str:
     return json.dumps(
@@ -1317,401 +1339,30 @@ def _ui_content_payload(data: dict[str, Any]) -> str:
 
 
 def _app_ui_html(title: str, mode: str) -> str:
-    # MCP Apps sends the tool result to the iframe via the official
-    # @modelcontextprotocol/ext-apps bridge. The HTML is intentionally
-    # self-contained except for the small SDK import.
-    escaped_title = (
-        title.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-
-    return f"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escaped_title}</title>
-<style>
-:root {{
-  color-scheme: light;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}}
-* {{ box-sizing: border-box; }}
-body {{
-  margin: 0;
-  background: #f8fafc;
-  color: #0f172a;
-}}
-.wrap {{
-  width: 100%;
-  padding: 16px;
-}}
-.card {{
-  border: 1px solid #e2e8f0;
-  background: #fff;
-  border-radius: 18px;
-  overflow: hidden;
-}}
-.head {{
-  padding: 16px 18px;
-  border-bottom: 1px solid #eef2f7;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}}
-.brand {{
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}}
-.logo {{
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  background: #0f172a;
-  color: white;
-  font-weight: 800;
-}}
-h1 {{
-  font-size: 15px;
-  margin: 0;
-  font-weight: 750;
-}}
-.sub {{
-  font-size: 11px;
-  color: #64748b;
-  margin-top: 2px;
-}}
-.body {{
-  padding: 16px 18px;
-}}
-.grid {{
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0,1fr));
-  gap: 10px;
-}}
-.product {{
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  padding: 10px;
-}}
-.product img {{
-  width: 100%;
-  aspect-ratio: 1.2;
-  object-fit: cover;
-  border-radius: 10px;
-  background: #f1f5f9;
-}}
-.name {{
-  font-size: 12px;
-  font-weight: 700;
-  margin-top: 8px;
-}}
-.meta {{
-  font-size: 10px;
-  color: #64748b;
-  margin-top: 3px;
-}}
-.price {{
-  font-size: 13px;
-  font-weight: 800;
-  margin-top: 7px;
-}}
-.pill {{
-  display: inline-flex;
-  margin-top: 7px;
-  padding: 4px 7px;
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #475569;
-  font-size: 9px;
-  font-weight: 700;
-}}
-.row {{
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 8px 0;
-  border-bottom: 1px solid #f1f5f9;
-  font-size: 12px;
-}}
-.row:last-child {{ border-bottom: 0; }}
-.muted {{ color: #64748b; }}
-.total {{
-  font-size: 16px;
-  font-weight: 800;
-}}
-.status {{
-  display: inline-flex;
-  padding: 5px 8px;
-  border-radius: 999px;
-  font-size: 9px;
-  font-weight: 800;
-}}
-.ok {{ background: #ecfdf5; color: #047857; }}
-.warn {{ background: #fffbeb; color: #b45309; }}
-.bad {{ background: #fef2f2; color: #b91c1c; }}
-.reason {{
-  margin-top: 12px;
-  padding: 11px 12px;
-  background: #f8fafc;
-  border-radius: 12px;
-  font-size: 11px;
-  line-height: 1.55;
-  color: #475569;
-}}
-.empty {{
-  padding: 30px 10px;
-  text-align: center;
-  color: #64748b;
-  font-size: 12px;
-}}
-.full {{ grid-column: 1 / -1; }}
-@media (max-width: 520px) {{
-  .grid {{ grid-template-columns: 1fr; }}
-}}
-</style>
-</head>
-<body>
-<div class="wrap">
-<div id="root"></div>
-</div>
-<script type="module">
-import {{ App }} from "https://unpkg.com/@modelcontextprotocol/ext-apps@1.1.2/app-with-deps";
-
-const app = new App({{
-  name: "Umon Mart",
-  version: "1.0.0",
-}});
-
-function money(paise) {{
-  return "₹" + (Number(paise || 0) / 100).toLocaleString("en-IN", {{
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }});
-}}
-
-function escapeHtml(value) {{
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}}
-
-function productCard(p) {{
-  const image = p.image
-    ? `<img src="${{escapeHtml(p.image)}}" alt="">`
-    : "";
-
-  return `<article class="product">
-    ${{image}}
-    <div class="name">${{escapeHtml(p.name)}}</div>
-    <div class="meta">${{escapeHtml(p.brand || "")}} · ${{escapeHtml(p.category || "")}}</div>
-    <div class="price">${{money(p.price_paise)}}</div>
-    ${{p.stock !== undefined ? `<span class="pill">${{Number(p.stock) > 0 ? "In stock" : "Out of stock"}}</span>` : ""}}
-  </article>`;
-}}
-
-function normalizeToolResult(result) {{
-  // MCP Apps delivers a CallToolResult object. Depending on the host/server
-  // adapter, structuredContent may be present directly, or the payload may
-  // arrive as JSON inside a text content block.
-  if (!result) return {{}};
-
-  if (result.structuredContent && typeof result.structuredContent === "object") {{
-    return result.structuredContent;
-  }}
-
-  const textBlock = Array.isArray(result.content)
-    ? result.content.find((item) => item?.type === "text" && typeof item.text === "string")
-    : null;
-
-  if (textBlock?.text) {{
-    try {{
-      const parsed = JSON.parse(textBlock.text);
-      if (parsed && typeof parsed === "object") return parsed;
-    }} catch (error) {{
-      console.warn("Umon widget could not parse tool text:", error);
-    }}
-  }}
-
-  if (result.data && typeof result.data === "object") {{
-    return result.data;
-  }}
-
-  return result;
-}}
-
-function render(result) {{
-  const root = document.getElementById("root");
-  const data = normalizeToolResult(result);
-
-  if ("products" in data || "suggestions" in data || "cross_sell" in data) {{
-    const products = data.products || data.suggestions || data.cross_sell || [];
-    root.innerHTML = `
-      <div class="card">
-        <div class="head">
-          <div class="brand">
-            <div class="logo">U</div>
-            <div><h1>Umon Mart</h1><div class="sub">${{escapeHtml(data.title || data.mode || "Products for you")}}</div></div>
-          </div>
-          <span class="status ok">${{products.length}} options</span>
-        </div>
-        <div class="body">
-          ${{products.length ? `<div class="grid">${{products.map(productCard).join("")}}</div>` : `<div class="empty">No matching products right now.</div>`}}
-        </div>
-      </div>`;
-    return;
-  }}
-
-  if (data.cart) {{
-    const cart = data.cart;
-    root.innerHTML = `
-      <div class="card">
-        <div class="head">
-          <div class="brand"><div class="logo">U</div><div><h1>Your Umon cart</h1><div class="sub">Shared cart</div></div></div>
-          <span class="status ok">${{Number(cart.item_count || cart.items?.length || 0)}} items</span>
-        </div>
-        <div class="body">
-          ${{(cart.items || []).map(i => `
-            <div class="row"><span>${{escapeHtml(i.name)}} × ${{i.quantity}}</span><strong>${{money(i.line_total_paise)}}</strong></div>
-          `).join("")}}
-          <div class="row"><span class="muted">Subtotal</span><span>${{money(cart.subtotal_paise)}}</span></div>
-          <div class="row"><span class="muted">Delivery</span><span>${{money(cart.delivery_fee_paise)}}</span></div>
-          <div class="row"><span class="total">Total</span><span class="total">${{money(cart.total_paise)}}</span></div>
-        </div>
-      </div>`;
-    return;
-  }}
-
-  if (data.checkout) {{
-    const c = data.checkout;
-    const p = c.policy || {{}};
-    const status = p.decision === "ALLOW" ? "ok" : (p.decision === "CONFIRM" ? "warn" : "bad");
-    root.innerHTML = `
-      <div class="card">
-        <div class="head">
-          <div class="brand"><div class="logo">U</div><div><h1>Checkout review</h1><div class="sub">No money moved by this preview</div></div></div>
-          <span class="status ${{status}}">${{escapeHtml(p.decision || "BLOCK")}}</span>
-        </div>
-        <div class="body">
-          <div class="row"><span class="muted">Agent</span><strong>${{escapeHtml(c.agent?.name || "—")}}</strong></div>
-          <div class="row"><span class="muted">Cart total</span><strong>${{money(c.cart?.total_paise)}}</strong></div>
-          <div class="row"><span class="muted">Available</span><span>${{money(c.agent?.balance_available_paise)}}</span></div>
-          <div class="row"><span class="muted">Transaction limit</span><span>${{money(c.agent?.policy?.max_transaction_paise)}}</span></div>
-          <div class="reason">${{escapeHtml(p.reason || "Review the decision before continuing.")}}</div>
-        </div>
-      </div>`;
-    return;
-  }}
-
-  if (data.order) {{
-    const o = data.order;
-    root.innerHTML = `
-      <div class="card">
-        <div class="head">
-          <div class="brand"><div class="logo">U</div><div><h1>Umon order</h1><div class="sub">${{escapeHtml(o.id || "")}}</div></div></div>
-          <span class="status ${{o.payment_status === "PAID" ? "ok" : "warn"}}">${{escapeHtml(o.payment_status || o.status || "UNKNOWN")}}</span>
-        </div>
-        <div class="body">
-          <div class="row"><span class="muted">Amount</span><strong>${{money(o.amount_paise)}}</strong></div>
-          <div class="row"><span class="muted">Payment</span><span>${{escapeHtml(o.payment_method || "—")}}</span></div>
-          <div class="row"><span class="muted">Order status</span><span>${{escapeHtml(o.status || "—")}}</span></div>
-        </div>
-      </div>`;
-    return;
-  }}
-
-  root.innerHTML = `<div class="card"><div class="empty">Umon result received.</div></div>`;
-}}
-
-app.ontoolresult = (result) => render(result);
-app.onerror = (error) => {{
-  console.error("Umon Apps error:", error);
-  document.getElementById("root").innerHTML =
-    `<div class="card"><div class="empty">Umon UI could not load this result. Please retry.</div></div>`;
-}};
-await app.connect();
-</script>
-</body>
-</html>"""
+    # UI-only loader. Business/commerce logic stays in the existing MCP tools.
+    filenames = {
+        "store": "store.html",
+        "cart": "cart.html",
+        "checkout": "checkout.html",
+        "order": "order.html",
+    }
+    try:
+        return _load_ui_file(filenames[mode])
+    except Exception:
+        # Keep a valid MCP App even if an optional UI file is missing.
+        return f"<!doctype html><html><body style=\"font-family:Poppins,Arial,sans-serif;padding:24px\"><b>{title}</b><p>Umon UI resource is temporarily unavailable.</p></body></html>"
 
 
-@mcp.resource(
-    STORE_UI_URI,
-    app=AppConfig(
-        domain=UMON_WIDGET_DOMAIN,
-        csp=ResourceCSP(
-            resource_domains=[
-                "https://unpkg.com",
-            ],
-        ),
-    ),
-)
-def store_ui() -> str:
-    return _app_ui_html(
-        "Umon Mart",
-        "store",
-    )
-
-
-@mcp.resource(
-    CART_UI_URI,
-    app=AppConfig(
-        domain=UMON_WIDGET_DOMAIN,
-        csp=ResourceCSP(
-            resource_domains=[
-                "https://unpkg.com",
-            ],
-        ),
-    ),
-)
-def cart_ui() -> str:
-    return _app_ui_html(
-        "Umon Cart",
-        "cart",
-    )
-
-
-@mcp.resource(
-    CHECKOUT_UI_URI,
-    app=AppConfig(
-        domain=UMON_WIDGET_DOMAIN,
-        csp=ResourceCSP(
-            resource_domains=[
-                "https://unpkg.com",
-            ],
-        ),
-    ),
-)
-def checkout_ui() -> str:
-    return _app_ui_html(
-        "Umon Checkout",
-        "checkout",
-    )
-
-
-@mcp.resource(
-    ORDER_UI_URI,
-    app=AppConfig(
-        domain=UMON_WIDGET_DOMAIN,
-        csp=ResourceCSP(
-            resource_domains=[
-                "https://unpkg.com",
-            ],
-        ),
-    ),
-)
-def order_ui() -> str:
-    return _app_ui_html(
-        "Umon Order",
-        "order",
+def _ui_csp() -> ResourceCSP:
+    return ResourceCSP(
+        resource_domains=[
+            "https://unpkg.com",
+            "https://fonts.googleapis.com",
+            "https://fonts.gstatic.com",
+            "https://encrypted-tbn0.gstatic.com",
+            "https://encrypted-tbn1.gstatic.com",
+            "https://banerjeesupermarket.com",
+        ],
     )
 
 
