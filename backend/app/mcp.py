@@ -1366,6 +1366,68 @@ def _ui_csp() -> ResourceCSP:
     )
 
 
+# ============================================================
+# MCP APP UI RESOURCES
+#
+# IMPORTANT:
+# A tool AppConfig(resource_uri=...) only points the host at the
+# resource. The corresponding @mcp.resource(...) handlers must
+# also exist or ChatGPT will show:
+#     Failed to fetch template
+# ============================================================
+
+@mcp.resource(
+    STORE_UI_URI,
+    app=AppConfig(
+        domain=UMON_WIDGET_DOMAIN,
+        csp=_ui_csp(),
+        prefers_border=True,
+    ),
+)
+def store_ui() -> str:
+    """Interactive Umon product/catalogue app."""
+    return _load_ui_file("store.html")
+
+
+@mcp.resource(
+    CART_UI_URI,
+    app=AppConfig(
+        domain=UMON_WIDGET_DOMAIN,
+        csp=_ui_csp(),
+        prefers_border=True,
+    ),
+)
+def cart_ui() -> str:
+    """Interactive Umon shared-cart app."""
+    return _load_ui_file("cart.html")
+
+
+@mcp.resource(
+    CHECKOUT_UI_URI,
+    app=AppConfig(
+        domain=UMON_WIDGET_DOMAIN,
+        csp=_ui_csp(),
+        prefers_border=True,
+    ),
+)
+def checkout_ui() -> str:
+    """Read-only Umon checkout review app."""
+    return _load_ui_file("checkout.html")
+
+
+@mcp.resource(
+    ORDER_UI_URI,
+    app=AppConfig(
+        domain=UMON_WIDGET_DOMAIN,
+        csp=_ui_csp(),
+        prefers_border=True,
+    ),
+)
+def order_ui() -> str:
+    """Umon order/payment status app."""
+    return _load_ui_file("order.html")
+
+
 @mcp.tool(
     app=AppConfig(
         resource_uri=STORE_UI_URI,

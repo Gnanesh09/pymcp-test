@@ -1,1 +1,157 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Umon Order</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet"><style>:root{font-family:Poppins,sans-serif;color:#111827;color-scheme:light}*{box-sizing:border-box}body{margin:0;background:#f7f9fc}.shell{max-width:760px;margin:auto;padding:14px}.card{background:white;border:1px solid #e7ecf3;border-radius:20px;overflow:hidden;box-shadow:0 8px 28px rgba(15,23,42,.06)}.head{padding:18px 19px;border-bottom:1px solid #edf1f5;display:flex;justify-content:space-between;gap:15px}.brand{display:flex;gap:10px;align-items:center}.logo{width:38px;height:38px;border-radius:11px;background:#111827;color:white;display:grid;place-items:center;font-weight:800}.kicker{font-size:10px;letter-spacing:.13em;color:#94a3b8;font-weight:700;text-transform:uppercase}.title{font-size:16px;font-weight:800}.sub{font-size:10px;color:#64748b;margin-top:2px}.status{padding:7px 10px;border-radius:999px;font-size:10px;font-weight:800;background:#eef2f7;color:#475569}.paid{background:#ecfdf5;color:#047857}.body{padding:17px 19px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.cell{padding:12px;border:1px solid #edf1f5;border-radius:13px}.label{font-size:9px;color:#94a3b8}.value{font-size:13px;font-weight:700;margin-top:4px}.lines{margin-top:14px}.line{display:flex;justify-content:space-between;border-bottom:1px solid #f1f4f7;padding:9px 0;font-size:11px}.foot{margin-top:12px;font-size:9px;color:#94a3b8}</style></head><body><div class="shell"><div id="root" class="card"><div style="padding:35px;text-align:center;color:#64748b;font-size:11px">Loading order…</div></div></div><script type="module">import{App}from"https://unpkg.com/@modelcontextprotocol/ext-apps@1.1.2/app-with-deps";const app=new App({name:"Umon Mart",version:"1.0.0"}),root=document.getElementById('root');const esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;'),money=p=>`₹${(Number(p||0)/100).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`;function dataOf(r){if(r?.structuredContent&&typeof r.structuredContent==='object')return r.structuredContent;const b=Array.isArray(r?.content)?r.content.find(x=>x?.type==='text'&&typeof x.text==='string'):null;if(b){try{return JSON.parse(b.text)}catch{}}return r?.data||r||{}}function render(r){const d=dataOf(r),o=d.order||d,s=String(o.payment_status||o.status||'UNKNOWN').toUpperCase();root.innerHTML=`<div class="head"><div class="brand"><div class="logo">U</div><div><div class="kicker">Umon Mart</div><div class="title">Order status</div><div class="sub">${esc(o.id||'Current order')}</div></div></div><span class="status ${s==='PAID'?'paid':''}">${esc(s)}</span></div><div class="body"><div class="grid"><div class="cell"><div class="label">Order</div><div class="value">${esc(o.id||'—')}</div></div><div class="cell"><div class="label">Amount</div><div class="value">${money(o.amount_paise)}</div></div><div class="cell"><div class="label">Payment</div><div class="value">${esc(o.payment_method||'—')}</div></div><div class="cell"><div class="label">Order status</div><div class="value">${esc(o.status||'—')}</div></div></div><div class="lines">${(o.items||[]).map(i=>`<div class="line"><span>${esc(i.name)} × ${esc(i.quantity)}</span><strong>${money(i.line_total_paise)}</strong></div>`).join('')}</div><div class="foot">Order state shown from Umon's current backend data.</div></div>`}app.ontoolresult=render;app.onerror=()=>root.innerHTML='<div style="padding:35px;text-align:center;color:#b91c1c;font-size:11px">Umon order UI could not load. Please retry.</div>';await app.connect();</script></body></html>
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Umon Order</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            font-family: Poppins, sans-serif;
+            color: #111827;
+            color-scheme: light
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            margin: 0;
+            background: #f7f9fc
+        }
+
+        .shell {
+            max-width: 760px;
+            margin: auto;
+            padding: 14px
+        }
+
+        .card {
+            background: white;
+            border: 1px solid #e7ecf3;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 8px 28px rgba(15, 23, 42, .06)
+        }
+
+        .head {
+            padding: 18px 19px;
+            border-bottom: 1px solid #edf1f5;
+            display: flex;
+            justify-content: space-between;
+            gap: 15px
+        }
+
+        .brand {
+            display: flex;
+            gap: 10px;
+            align-items: center
+        }
+
+        .logo {
+            width: 38px;
+            height: 38px;
+            border-radius: 11px;
+            background: #111827;
+            color: white;
+            display: grid;
+            place-items: center;
+            font-weight: 800
+        }
+
+        .kicker {
+            font-size: 10px;
+            letter-spacing: .13em;
+            color: #94a3b8;
+            font-weight: 700;
+            text-transform: uppercase
+        }
+
+        .title {
+            font-size: 16px;
+            font-weight: 800
+        }
+
+        .sub {
+            font-size: 10px;
+            color: #64748b;
+            margin-top: 2px
+        }
+
+        .status {
+            padding: 7px 10px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 800;
+            background: #eef2f7;
+            color: #475569
+        }
+
+        .paid {
+            background: #ecfdf5;
+            color: #047857
+        }
+
+        .body {
+            padding: 17px 19px
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 9px
+        }
+
+        .cell {
+            padding: 12px;
+            border: 1px solid #edf1f5;
+            border-radius: 13px
+        }
+
+        .label {
+            font-size: 9px;
+            color: #94a3b8
+        }
+
+        .value {
+            font-size: 13px;
+            font-weight: 700;
+            margin-top: 4px
+        }
+
+        .lines {
+            margin-top: 14px
+        }
+
+        .line {
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px solid #f1f4f7;
+            padding: 9px 0;
+            font-size: 11px
+        }
+
+        .foot {
+            margin-top: 12px;
+            font-size: 9px;
+            color: #94a3b8
+        }
+    </style>
+</head>
+
+<body>
+    <div class="shell">
+        <div id="root" class="card">
+            <div style="padding:35px;text-align:center;color:#64748b;font-size:11px">Loading order…</div>
+        </div>
+    </div>
+    <script
+        type="module">import { App } from "https://unpkg.com/@modelcontextprotocol/ext-apps@1.1.2/app-with-deps"; const app = new App({ name: "Umon Mart", version: "1.0.0" }), root = document.getElementById('root'); const esc = v => String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;'), money = p => `₹${(Number(p || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; function dataOf(r) { if (r?.structuredContent && typeof r.structuredContent === 'object') return r.structuredContent; const b = Array.isArray(r?.content) ? r.content.find(x => x?.type === 'text' && typeof x.text === 'string') : null; if (b) { try { return JSON.parse(b.text) } catch { } } return r?.data || r || {} } function render(r) { const d = dataOf(r), o = d.order || d, s = String(o.payment_status || o.status || 'UNKNOWN').toUpperCase(); root.innerHTML = `<div class="head"><div class="brand"><div class="logo">U</div><div><div class="kicker">Umon Mart</div><div class="title">Order status</div><div class="sub">${esc(o.id || 'Current order')}</div></div></div><span class="status ${s === 'PAID' ? 'paid' : ''}">${esc(s)}</span></div><div class="body"><div class="grid"><div class="cell"><div class="label">Order</div><div class="value">${esc(o.id || '—')}</div></div><div class="cell"><div class="label">Amount</div><div class="value">${money(o.amount_paise)}</div></div><div class="cell"><div class="label">Payment</div><div class="value">${esc(o.payment_method || '—')}</div></div><div class="cell"><div class="label">Order status</div><div class="value">${esc(o.status || '—')}</div></div></div><div class="lines">${(o.items || []).map(i => `<div class="line"><span>${esc(i.name)} × ${esc(i.quantity)}</span><strong>${money(i.line_total_paise)}</strong></div>`).join('')}</div><div class="foot">Order state shown from Umon's current backend data.</div></div>` } app.ontoolresult = render; app.onerror = () => root.innerHTML = '<div style="padding:35px;text-align:center;color:#b91c1c;font-size:11px">Umon order UI could not load. Please retry.</div>'; await app.connect();</script>
+</body>
+
+</html>
