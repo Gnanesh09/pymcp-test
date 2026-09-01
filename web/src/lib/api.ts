@@ -15,14 +15,10 @@ export type CategoryMode = "ALL" | "SELECTED";
 export type AgentCreateInput = {
   name: string;
   description: string | null;
-
   max_transaction: number;
   daily_limit: number;
-
   auto_purchase: boolean;
-
   category_mode: CategoryMode;
-
   allowed_categories: string[];
   blocked_categories: string[];
 };
@@ -30,11 +26,8 @@ export type AgentCreateInput = {
 export type AgentPolicyUpdateInput = {
   max_transaction?: number;
   daily_limit?: number;
-
   auto_purchase?: boolean;
-
   category_mode?: CategoryMode;
-
   allowed_categories?: string[];
   blocked_categories?: string[];
 };
@@ -42,6 +35,66 @@ export type AgentPolicyUpdateInput = {
 export type AgentUpdateInput = {
   name?: string;
   description?: string | null;
+};
+
+// ============================================================
+// IN-APP AI AGENT TYPES
+// ============================================================
+
+export type AgentChatInput = {
+  message: string;
+  selected_agent_id?: string;
+};
+
+export type AgentChatResponse = {
+  success: boolean;
+  session_persisted?: boolean;
+
+  answer: string;
+
+  intent?: string;
+  intent_type?: string;
+
+  cart?: any;
+
+  agent?: any;
+  agent_stats?: any;
+
+  recommendations?: any[];
+
+  basket_gaps?: string[];
+
+  affordability?: {
+    recommendation_total_paise?: number;
+    recommendation_total?: number | string;
+
+    available_paise?: number;
+    available?: number | string;
+
+    transaction_limit_paise?: number;
+    transaction_limit?: number | string;
+
+    daily_remaining_paise?: number;
+    daily_remaining?: number | string;
+
+    fits_balance?: boolean;
+    fits_transaction?: boolean;
+    fits_daily?: boolean;
+
+    money_movement?: boolean;
+  } | null;
+
+  warnings?: string[];
+
+  actions?: Array<{
+    type: string;
+    product_id: string;
+    label: string;
+  }>;
+
+  money_movement?: boolean;
+
+  trace?: string[];
 };
 
 // ============================================================
@@ -113,7 +166,6 @@ export function useUmonApi() {
 
       headers: {
         Authorization: `Bearer ${token}`,
-
         ...(init?.headers ?? {}),
       },
     });
@@ -235,17 +287,7 @@ export function useUmonApi() {
           body: JSON.stringify(body),
         }),
 
-      updateAgentPolicy: (
-        agentId: string,
-        body: {
-          max_transaction?: number;
-          daily_limit?: number;
-          auto_purchase?: boolean;
-          category_mode?: "ALL" | "SELECTED";
-          allowed_categories?: string[];
-          blocked_categories?: string[];
-        },
-      ) =>
+      updateAgentPolicy: (agentId: string, body: AgentPolicyUpdateInput) =>
         authRequest<any>(`/agents/${encodeURIComponent(agentId)}/policy`, {
           method: "PATCH",
           body: JSON.stringify(body),
@@ -387,6 +429,32 @@ export function useUmonApi() {
         authRequest<any>(
           agentId ? `/audit?agent_id=${encodeURIComponent(agentId)}` : "/audit",
         ),
+
+      // ======================================================
+      // IN-APP AI AGENT
+      //
+      // Ephemeral chat:
+      // no conversation persistence is performed here.
+      // ======================================================
+
+      agentChat: (body: AgentChatInput) =>
+        authRequest<AgentChatResponse>("/agent/chat", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
+
+      // ======================================================
+      // IN-APP AI RECOMMENDATION
+      //
+      // Used for automatic re-evaluation after a cart change.
+      // No cart mutation or payment happens here.
+      // ======================================================
+
+      agentRecommend: (body: AgentChatInput) =>
+        authRequest<AgentChatResponse>("/agent/recommend", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
     }),
 
     [getToken],

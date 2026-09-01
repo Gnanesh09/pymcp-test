@@ -4,7 +4,10 @@ import hmac
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+# Add imports to your existing backend/app/routes.py
 
+
+from .agent_graph import run_multi_agent, public_result
 
 
 from .config import settings
@@ -805,3 +808,75 @@ async def admin_audit_route(
                 limit=limit,
             ),
     }
+    
+    
+    
+
+# ============================================================
+# REQUEST MODEL
+# ============================================================
+
+class AgentChatRequest(BaseModel):
+    message: str = Field(
+        min_length=1,
+        max_length=4000,
+    )
+
+    selected_agent_id: str | None = None
+
+
+# ============================================================
+# POST /api/agent/chat
+# ============================================================
+
+@router.post("/agent/chat")
+async def agent_chat(
+    body: AgentChatRequest,
+    user=Depends(get_current_user),
+):
+    """
+    Run one ephemeral Umon multi-agent shopping interaction.
+
+    The authenticated Clerk user is always taken from the backend session;
+    the browser never supplies the user ID.
+
+    This endpoint does NOT:
+      - persist the conversation
+      - add products to the cart
+      - change agent balances
+      - perform checkout
+      - modify inventory
+
+    It returns verified recommendations which the frontend can render and
+    allow the user to add explicitly.
+    """
+    try:
+        result = await run_multi_agent(
+            user_id=user["clerk_user_id"],
+            message=body.message,
+            selected_agent_id=body.selected_agent_id,
+        )
+
+        return public_result(result)
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        # Do not expose provider internals or credentials.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Umon AI could not complete this request. "
+                "No purchase was made."
+            ),
+        ) from exc
