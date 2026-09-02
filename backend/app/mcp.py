@@ -1668,6 +1668,11 @@ def store_ui() -> str:
         csp=ResourceCSP(
             resource_domains=[
                 "https://unpkg.com",
+      "https://fonts.googleapis.com",
+      "https://fonts.gstatic.com",
+      "https://encrypted-tbn0.gstatic.com",
+      "https://encrypted-tbn1.gstatic.com",
+      "https://banerjeesupermarket.com"
             ],
         ),
     ),
