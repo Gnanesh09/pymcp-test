@@ -34,8 +34,9 @@ import hashlib
 import json
 import os
 import secrets
-from pathlib import Path
 from typing import Any, AsyncGenerator
+
+import httpx
 from urllib.parse import urlencode, urlparse
 
 import jwt
@@ -45,7 +46,7 @@ from fastmcp.apps import AppConfig, ResourceCSP
 from fastmcp.server.dependencies import get_http_headers
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from jwt import PyJWKClient
 
 from .config import settings
@@ -95,18 +96,20 @@ UMON_WIDGET_DOMAIN = os.getenv(
     MCP_PUBLIC_URL,
 ).strip().rstrip("/")
 
+# Image hosts currently used by seeded Umon products. The browser widget uses
+# the proxy below so third-party image CSP/redirect/CORS behavior does not
+# determine whether a product image renders.
+UI_IMAGE_HOSTS = {
+    "encrypted-tbn0.gstatic.com",
+    "encrypted-tbn1.gstatic.com",
+    "banerjeesupermarket.com",
+}
+
 OAUTH_CODE_TTL_SECONDS = 120
 OAUTH_ACCESS_TTL_SECONDS = 3600
 OAUTH_REFRESH_TTL_SECONDS = 60 * 60 * 24 * 30
 
 PRODUCT_UI_URI = "ui://umon/product-catalogue.html"
-
-# UI resource identifiers are declared early because catalog/recommendation
-# tools below bind their existing business logic to the visual Store App.
-STORE_UI_URI = "ui://umon/store.html"
-CART_UI_URI = "ui://umon/cart.html"
-CHECKOUT_UI_URI = "ui://umon/checkout.html"
-ORDER_UI_URI = "ui://umon/order.html"
 
 
 # ============================================================
@@ -380,6 +383,19 @@ def _safe_product(product: dict[str, Any]) -> dict[str, Any]:
             int(result["mrp_paise"])
         )
 
+    image = result.get("image")
+    if isinstance(image, str) and image.startswith(("http://", "https://")):
+        try:
+            host = urlparse(image).hostname or ""
+            host = host.lower().rstrip(".")
+            if host in UI_IMAGE_HOSTS:
+                result["image"] = (
+                    f"{MCP_PUBLIC_URL}/assets/image-proxy?"
+                    f"{urlencode({'url': image})}"
+                )
+        except Exception:
+            result["image"] = None
+
     return _safe_json(result)
 
 
@@ -424,6 +440,9 @@ mcp = FastMCP(
     name=MCP_APP_NAME,
     instructions=(
         "Umon Mart makes this merchant sellable to AI buyers. "
+        "For user-facing product discovery, recommendations, basket building, or shopping, prefer the single composite shopping_assist tool. "
+        "Do not call search_offers, get_recommendations, or get_cart_recommendations as separate user-facing steps when shopping_assist can satisfy the request; those tools are supporting lookups and do not render an app. "
+        "Only make another catalogue lookup when the first result genuinely lacks required live evidence or the user explicitly asks for a different lookup. "
         "Use live catalog data before making product claims. "
         "The shared cart belongs to the user, not an agent. "
         "At checkout, use the user's selected purchasing agent. "
@@ -431,7 +450,8 @@ mcp = FastMCP(
         "agent policy, balance, payment, order and audit state. "
         "Never override BLOCK or CONFIRM decisions. "
         "Never invent payment success. "
-        "Only call checkout after clear user authorization."
+        "Only call checkout after clear user authorization. "
+        "When a shopping request can benefit from a visual catalogue/cart/checkout result, use the corresponding MCP App tool so the user can see verified Umon data. "
     ),
     lifespan=app_lifespan,
 )
@@ -544,9 +564,7 @@ async def get_agent_spending(
 # CATALOG
 # ============================================================
 
-@mcp.tool(
-    app=AppConfig(resource_uri=STORE_UI_URI, domain=UMON_WIDGET_DOMAIN, prefers_border=True)
-)
+@mcp.tool()
 async def search_offers(
     query: str = "",
     category: str | None = None,
@@ -554,7 +572,7 @@ async def search_offers(
     limit: int = 8,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Search active Umon offers using the current merchant catalogue."""
+    """Internal catalog lookup. Use shopping_assist for user-facing shopping/browsing so only one Store UI is rendered per turn."""
     if ctx is None:
         raise RuntimeError("MCP context is required.")
 
@@ -589,14 +607,12 @@ async def search_offers(
     }
 
 
-@mcp.tool(
-    app=AppConfig(resource_uri=STORE_UI_URI, domain=UMON_WIDGET_DOMAIN, prefers_border=True)
-)
+@mcp.tool()
 async def get_offer(
     product_id: str,
     ctx: Context,
 ) -> dict[str, Any]:
-    """Get one live active offer by product id."""
+    """Internal lookup for one live active offer. Do not use this to create a separate user-facing catalogue surface."""
     await _user(ctx)
     db = get_db()
 
@@ -647,18 +663,17 @@ async def list_categories(ctx: Context) -> dict[str, Any]:
 # CROSS-SELL / UPSELL
 # ============================================================
 
-@mcp.tool(
-    app=AppConfig(resource_uri=STORE_UI_URI, domain=UMON_WIDGET_DOMAIN, prefers_border=True)
-)
+@mcp.tool()
 async def get_recommendations(
     product_id: str,
     ctx: Context,
 ) -> dict[str, Any]:
     """
-    Return merchant-defined complementary offers.
+    Internal recommendation lookup. Prefer shopping_assist for user-facing
+    recommendations so the Store UI is rendered once with a coherent set.
 
     Recommendations are advisory: this tool never adds items to the cart
-    and never spends money. The AI should only suggest relevant complements.
+    and never spends money.
     """
     await _user(ctx)
 
@@ -676,14 +691,12 @@ async def get_recommendations(
     }
 
 
-@mcp.tool(
-    app=AppConfig(resource_uri=STORE_UI_URI, domain=UMON_WIDGET_DOMAIN, prefers_border=True)
-)
+@mcp.tool()
 async def get_cart_recommendations(
     ctx: Context,
     limit: int = 6,
 ) -> dict[str, Any]:
-    """Find useful complementary offers for products already in the shared cart."""
+    """Internal cart cross-sell lookup. Prefer shopping_assist for user-facing recommendations."""
     user_id = await _user(ctx)
     cart = await service_get_cart(user_id)
 
@@ -744,7 +757,7 @@ async def get_cart(ctx: Context) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(app=AppConfig(visibility=["model", "app"]))
 async def add_to_cart(
     product_id: str,
     quantity: int = Field(
@@ -1318,124 +1331,82 @@ async def get_my_activity(
 # LANGGRAPH + CHATGPT APP UI
 # ============================================================
 
+from pathlib import Path
+
 STORE_UI_URI = "ui://umon/store.html"
 CART_UI_URI = "ui://umon/cart.html"
 CHECKOUT_UI_URI = "ui://umon/checkout.html"
 ORDER_UI_URI = "ui://umon/order.html"
-
 UI_DIR = Path(__file__).resolve().parent / "ui"
 
+# Known domains used by the current seeded catalogue plus Google Fonts.
+# Keep this allowlist small. New merchant image hosts should be added here
+# deliberately when their URLs are introduced into catalogue data.
+UI_RESOURCE_DOMAINS = [
+    "https://unpkg.com",
+    "https://fonts.googleapis.com",
+    "https://fonts.gstatic.com",
+    "https://encrypted-tbn0.gstatic.com",
+    "https://encrypted-tbn1.gstatic.com",
+    "https://banerjeesupermarket.com",
+]
 
-def _load_ui_file(filename: str) -> str:
-    return (UI_DIR / filename).read_text(encoding="utf-8")
 
-
-def _ui_content_payload(data: dict[str, Any]) -> str:
-    return json.dumps(
-        _safe_json(data),
-        ensure_ascii=False,
-        default=str,
-    )
-
-
-def _app_ui_html(title: str, mode: str) -> str:
-    # UI-only loader. Business/commerce logic stays in the existing MCP tools.
-    filenames = {
-        "store": "store.html",
-        "cart": "cart.html",
-        "checkout": "checkout.html",
-        "order": "order.html",
-    }
+def _load_ui(name: str) -> str:
+    path = UI_DIR / name
     try:
-        return _load_ui_file(filenames[mode])
-    except Exception:
-        # Keep a valid MCP App even if an optional UI file is missing.
-        return f"<!doctype html><html><body style=\"font-family:Poppins,Arial,sans-serif;padding:24px\"><b>{title}</b><p>Umon UI resource is temporarily unavailable.</p></body></html>"
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Umon UI resource is missing: {path.name}") from exc
 
 
-def _ui_csp() -> ResourceCSP:
-    return ResourceCSP(
-        resource_domains=[
-            "https://unpkg.com",
-            "https://fonts.googleapis.com",
-            "https://fonts.gstatic.com",
-            "https://encrypted-tbn0.gstatic.com",
-            "https://encrypted-tbn1.gstatic.com",
-            "https://banerjeesupermarket.com",
-            "https://www.bbassets.com"
-        ],
+def _ui_resource_app() -> AppConfig:
+    # On a resource, resource_uri/visibility are not used. FastMCP uses the
+    # resource itself as the UI and only needs its CSP/domain here.
+    return AppConfig(
+        domain=UMON_WIDGET_DOMAIN,
+        csp=ResourceCSP(
+            resource_domains=UI_RESOURCE_DOMAINS,
+        ),
     )
 
 
-# ============================================================
-# MCP APP UI RESOURCES
-#
-# IMPORTANT:
-# A tool AppConfig(resource_uri=...) only points the host at the
-# resource. The corresponding @mcp.resource(...) handlers must
-# also exist or ChatGPT will show:
-#     Failed to fetch template
-# ============================================================
-
-@mcp.resource(
-    STORE_UI_URI,
-    app=AppConfig(
+def _ui_tool_app(resource_uri: str) -> AppConfig:
+    # model + app visibility ensures the host can render the app while the
+    # same tool remains callable by the model.
+    return AppConfig(
+        resource_uri=resource_uri,
+        visibility=["model", "app"],
         domain=UMON_WIDGET_DOMAIN,
-        csp=_ui_csp(),
         prefers_border=True,
-    ),
-)
+    )
+
+
+@mcp.resource(STORE_UI_URI, app=_ui_resource_app())
 def store_ui() -> str:
-    """Interactive Umon product/catalogue app."""
-    return _load_ui_file("store.html")
+    """Interactive Umon product recommendation UI."""
+    return _load_ui("store.html")
 
 
-@mcp.resource(
-    CART_UI_URI,
-    app=AppConfig(
-        domain=UMON_WIDGET_DOMAIN,
-        csp=_ui_csp(),
-        prefers_border=True,
-    ),
-)
+@mcp.resource(CART_UI_URI, app=_ui_resource_app())
 def cart_ui() -> str:
-    """Interactive Umon shared-cart app."""
-    return _load_ui_file("cart.html")
+    """Interactive Umon shared-cart UI."""
+    return _load_ui("cart.html")
 
 
-@mcp.resource(
-    CHECKOUT_UI_URI,
-    app=AppConfig(
-        domain=UMON_WIDGET_DOMAIN,
-        csp=_ui_csp(),
-        prefers_border=True,
-    ),
-)
+@mcp.resource(CHECKOUT_UI_URI, app=_ui_resource_app())
 def checkout_ui() -> str:
-    """Read-only Umon checkout review app."""
-    return _load_ui_file("checkout.html")
+    """Read-only Umon checkout review UI."""
+    return _load_ui("checkout.html")
 
 
-@mcp.resource(
-    ORDER_UI_URI,
-    app=AppConfig(
-        domain=UMON_WIDGET_DOMAIN,
-        csp=_ui_csp(),
-        prefers_border=True,
-    ),
-)
+@mcp.resource(ORDER_UI_URI, app=_ui_resource_app())
 def order_ui() -> str:
-    """Umon order/payment status app."""
-    return _load_ui_file("order.html")
+    """Umon order/payment state UI."""
+    return _load_ui("order.html")
 
 
-@mcp.tool(
-    app=AppConfig(
-        resource_uri=STORE_UI_URI,
-        domain=UMON_WIDGET_DOMAIN,
-        prefers_border=True,
-    )
-)
+@mcp.tool(app=_ui_tool_app(STORE_UI_URI))
 async def shopping_assist(
     intent: str,
     budget: float | None = None,
@@ -1444,33 +1415,22 @@ async def shopping_assist(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """
-    Umon's agentic shopping planner.
-
-    Understand a shopping goal, inspect the user's shared cart, discover live
-    merchant offers, find relevant complementary products, and build a small
-    recommendation plan. This tool never spends money and never adds to cart.
+    Use Umon's shopping graph to understand a goal, inspect the shared cart,
+    discover live products, surface merchant-defined cross-sells and return a
+    small verified recommendation set. Never changes the cart or moves money.
     """
     if ctx is None:
-        raise RuntimeError(
-            "MCP context is required."
-        )
+        raise RuntimeError("MCP context is required.")
 
     user_id = await _user(ctx)
 
     if budget is not None and budget < 0:
-        return _error(
-            "INVALID_BUDGET",
-            "Budget cannot be negative.",
-        )
+        return _error("INVALID_BUDGET", "Budget cannot be negative.")
 
     result = await run_shopping_assistant(
         user_id=user_id,
         intent=intent,
-        budget_paise=(
-            round(budget * 100)
-            if budget is not None
-            else None
-        ),
+        budget_paise=round(budget * 100) if budget is not None else None,
         category=category,
         selected_agent_id=selected_agent_id,
     )
@@ -1482,129 +1442,59 @@ async def shopping_assist(
         agent_id=selected_agent_id,
         metadata={
             "intent": intent,
-            "budget_paise": (
-                round(budget * 100)
-                if budget is not None
-                else None
-            ),
+            "budget_paise": round(budget * 100) if budget is not None else None,
             "category": category,
-            "suggestion_total_paise":
-                result.get(
-                    "suggestion_total_paise",
-                    0,
-                ),
-            "graph":
-                graph_description(),
+            "suggestion_total_paise": result.get("suggestion_total_paise", 0),
+            "graph": graph_description(),
         },
     )
 
     return {
         "success": True,
         "mode": "RECOMMENDATION_ONLY",
-        "title": "Umon shopping suggestions",
+        "title": "Smart recommendations",
         "intent": intent,
-        "budget_paise": (
-            round(budget * 100)
-            if budget is not None
-            else None
+        "budget_paise": round(budget * 100) if budget is not None else None,
+        "suggestions": result.get("suggestion_items", []),
+        "recommendations": result.get("suggestion_items", []),
+        "cross_sell": result.get("recommendations", []),
+        "suggestion_total_paise": result.get("suggestion_total_paise", 0),
+        "suggestion_total": _money(result.get("suggestion_total_paise", 0)),
+        "cart": result.get("cart", {}),
+        "agent": _safe_agent(result["agent"]) if result.get("agent") else None,
+        "agent_spending": _safe_json(result.get("agent_spending")),
+        "warnings": result.get("warnings", []),
+        "basket_gaps": result.get("warnings", []),
+        "explanation": result.get(
+            "explanation",
+            "These recommendations use current Umon catalogue data. Nothing was added or purchased automatically.",
         ),
-        "suggestions": result.get(
-            "suggestion_items",
-            [],
-        ),
-        "cross_sell": result.get(
-            "recommendations",
-            [],
-        ),
-        "suggestion_total_paise":
-            result.get(
-                "suggestion_total_paise",
-                0,
-            ),
-        "suggestion_total":
-            _money(
-                result.get(
-                    "suggestion_total_paise",
-                    0,
-                )
-            ),
-        "cart":
-            result.get("cart", {}),
-        "agent":
-            _safe_agent(
-                result["agent"]
-            )
-            if result.get("agent")
-            else None,
-        "agent_spending":
-            _safe_json(
-                result.get(
-                    "agent_spending"
-                )
-            ),
-        "warnings":
-            result.get(
-                "warnings",
-                [],
-            ),
-        "explanation":
-            result.get(
-                "explanation",
-                "",
-            ),
         "graph": graph_description(),
-        "next_action":
-            result.get(
-                "next_action",
-                "present_recommendations",
-            ),
-        "money_movement":
-            False,
-    }
-
-
-@mcp.tool(
-    app=AppConfig(
-        resource_uri=CART_UI_URI,
-        domain=UMON_WIDGET_DOMAIN,
-        prefers_border=True,
-    )
-)
-async def show_cart(
-    ctx: Context,
-) -> dict[str, Any]:
-    """Render the authenticated user's shared Umon cart in ChatGPT."""
-    user_id = await _user(ctx)
-    cart = await service_get_cart(user_id)
-
-    return {
-        "success": True,
-        "cart": cart,
+        "next_action": result.get("next_action", "present_recommendations"),
         "money_movement": False,
     }
 
 
-@mcp.tool(
-    app=AppConfig(
-        resource_uri=CHECKOUT_UI_URI,
-        domain=UMON_WIDGET_DOMAIN,
-        prefers_border=True,
-    )
-)
+@mcp.tool(app=_ui_tool_app(CART_UI_URI))
+async def show_cart(ctx: Context) -> dict[str, Any]:
+    """Render the authenticated user's one shared Umon cart."""
+    user_id = await _user(ctx)
+    return {
+        "success": True,
+        "cart": await service_get_cart(user_id),
+        "money_movement": False,
+    }
+
+
+@mcp.tool(app=_ui_tool_app(CHECKOUT_UI_URI))
 async def review_checkout(
     agent_id: str,
     confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """
-    Render an authoritative, read-only checkout review.
-
-    This calls the existing Umon validation path; it does not move money.
-    """
+    """Render the authoritative, read-only checkout decision."""
     if ctx is None:
-        raise RuntimeError(
-            "MCP context is required."
-        )
+        raise RuntimeError("MCP context is required.")
 
     result = await validate_checkout(
         agent_id=agent_id,
@@ -1619,18 +1509,12 @@ async def review_checkout(
     }
 
 
-@mcp.tool(
-    app=AppConfig(
-        resource_uri=ORDER_UI_URI,
-        domain=UMON_WIDGET_DOMAIN,
-        prefers_border=True,
-    )
-)
+@mcp.tool(app=_ui_tool_app(ORDER_UI_URI))
 async def show_order(
     order_id: str,
     ctx: Context,
 ) -> dict[str, Any]:
-    """Render a user's current order/payment state in ChatGPT."""
+    """Render the authenticated user's order/payment state."""
     return await get_order_status(
         order_id=order_id,
         ctx=ctx,
@@ -1781,6 +1665,57 @@ async def _registered_client(client_id: str) -> dict[str, Any] | None:
     return await get_db().mcp_oauth_clients.find_one(
         {"client_id": client_id}
     )
+
+
+@mcp.custom_route("/assets/image-proxy", methods=["GET"])
+async def image_proxy(request: Request) -> Response:
+    """Proxy allowlisted catalogue images for stable MCP App rendering."""
+    raw_url = request.query_params.get("url", "").strip()
+    if not raw_url:
+        return Response("Missing image URL.", status_code=400)
+
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return Response("Invalid image URL.", status_code=400)
+
+    host = parsed.hostname.lower().rstrip(".")
+    if host not in UI_IMAGE_HOSTS:
+        return Response("Image host is not allowlisted.", status_code=403)
+
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=8.0,
+            headers={"User-Agent": "Umon-MCP-Image-Proxy/1.0"},
+        ) as client:
+            response = await client.get(raw_url)
+
+        # Re-check every redirect destination to prevent an allowlist bypass.
+        destinations = [*response.history, response]
+        for hop in destinations:
+            hop_host = (hop.url.host or "").lower().rstrip(".")
+            if hop_host not in UI_IMAGE_HOSTS:
+                return Response("Image redirect is not allowlisted.", status_code=403)
+
+        if response.status_code >= 400:
+            return Response("Image unavailable.", status_code=404)
+
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+        if not content_type.startswith("image/"):
+            return Response("Remote resource is not an image.", status_code=415)
+
+        body = response.content
+        if len(body) > 4 * 1024 * 1024:
+            return Response("Image is too large.", status_code=413)
+
+        return Response(
+            body,
+            status_code=200,
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    except httpx.HTTPError:
+        return Response("Image fetch failed.", status_code=502)
 
 
 @mcp.custom_route("/health", methods=["GET"])
