@@ -1349,6 +1349,7 @@ UI_RESOURCE_DOMAINS = [
     "https://encrypted-tbn0.gstatic.com",
     "https://encrypted-tbn1.gstatic.com",
     "https://banerjeesupermarket.com",
+    "https://www.bbassets.com",
 ]
 
 
